@@ -235,17 +235,11 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
     amber = (255, 140, 0)
 
     r = renderer
-
-    # Explicit layout specification:
-    # 0: blank row (top margin)
-    # 1..7: header glyph box (baseline at y=1)
-    # 8..9: two blank rows
-    # 10: horizontal rule (full width, ignores horizontal margin)
-    # 11..13: three blank rows
-    # 14: first departure row baseline, subsequent rows separated by 5px vertical spacing
-    HEADER_BASELINE_Y = 1
-    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 2  # 1 + 7 + 2 = 10
-    DEPARTURES_START_Y = RULE_Y + 1 + 3      # 10 + 1 + 3 = 14
+    
+    # Layout constants:
+    HEADER_BASELINE_Y = 2
+    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3  # 2 + 7 + 3 = 12
+    DEPARTURES_START_Y = RULE_Y + 1 + 4      # 12 + 1 + 4 = 17
     cap = r.rows_capacity(DEPARTURES_START_Y)
     prepared = r.prepare_rows(rows, origin, cap)
 
