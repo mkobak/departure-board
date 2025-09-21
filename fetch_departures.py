@@ -19,6 +19,7 @@ import unicodedata
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
+import os
 import requests
 
 
@@ -40,11 +41,33 @@ LIMIT = 4
 TRANSPORTS: Optional[List[str]] = ["tram", "train"]
 
 
+def _default_ca_bundle() -> str | None:
+    """Return a usable CA bundle path if certifi path is broken.
+
+    Tries:
+      1. certifi.where()
+      2. /etc/ssl/certs/ca-certificates.crt (Debian/RPi OS default)
+    Returns None if neither exists (requests will then raise).
+    """
+    try:
+        import certifi  # type: ignore
+        path = certifi.where()
+        if os.path.exists(path):
+            return path
+    except Exception:  # noqa: BLE001
+        pass
+    fallback = "/etc/ssl/certs/ca-certificates.crt"
+    if os.path.exists(fallback):
+        return fallback
+    return None
+
+
 def fetch_stationboard(
     station: str,
     limit: int = 8,
     transportations: Optional[List[str]] = None,
     timeout: float = 10.0,
+    verify: bool | str = True,
 ) -> List[Dict[str, Any]]:
     """Return a simplified list of upcoming departures for a station.
 
@@ -61,7 +84,14 @@ def fetch_stationboard(
     if transportations:
         params["transportations[]"] = transportations
 
-    r = requests.get(API_URL, params=params, timeout=timeout)
+    # Decide verification behavior
+    if verify is True:
+        # Attempt to ensure a valid CA bundle even if certifi path is missing
+        ca = _default_ca_bundle()
+        verify_param: bool | str = ca if ca else True
+    else:  # verify explicitly False or custom path string
+        verify_param = verify if verify is not None else True
+    r = requests.get(API_URL, params=params, timeout=timeout, verify=verify_param)
     r.raise_for_status()
     data = r.json()
     rows: List[Dict[str, Any]] = []
