@@ -165,9 +165,12 @@ class Renderer:
                 w += CHAR_SPACING
         return w
 
-    def rows_capacity(self, header_block: int) -> int:
-        """Compute how many departure rows fit below header with top/bottom margin."""
-        available = self.rows - header_block - (2 * BOARD_MARGIN)
+    def rows_capacity(self, start_y: int) -> int:
+        """Compute number of departure rows fitting starting at start_y (baseline of first row).
+
+        Leaves a bottom BOARD_MARGIN row unused as border.
+        """
+        available = self.rows - start_y - BOARD_MARGIN
         line_height = CHAR_H + LINE_SPACING
         full = available // line_height
         leftover = available - full * line_height
@@ -233,16 +236,17 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
 
     r = renderer
 
-    # Header layout constants (mirroring demo_board)
-    top_margin = 2
-    header_line_height = CHAR_H  # glyph box height
-    space_after_header = 3
-    rule_height = 1
-    space_after_rule = 5
-    header_block = (top_margin + header_line_height + space_after_header +
-                    rule_height + space_after_rule)
-    cap = r.rows_capacity(header_block)
-
+    # Explicit layout specification:
+    # 0: blank row (top margin)
+    # 1..7: header glyph box (baseline at y=1)
+    # 8..9: two blank rows
+    # 10: horizontal rule (full width, ignores horizontal margin)
+    # 11..13: three blank rows
+    # 14: first departure row baseline, subsequent rows separated by 5px vertical spacing
+    HEADER_BASELINE_Y = 1
+    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 2  # 1 + 7 + 2 = 10
+    DEPARTURES_START_Y = RULE_Y + 1 + 3      # 10 + 1 + 3 = 14
+    cap = r.rows_capacity(DEPARTURES_START_Y)
     prepared = r.prepare_rows(rows, origin, cap)
 
     # Drawing helpers --------------------------------------------------
@@ -273,7 +277,7 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
     # Header: time right, stop name left truncated, 1px padding on each side.
     now_txt = datetime.now().strftime('%H:%M')
     inner_left = BOARD_MARGIN
-    inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside margin
+    inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside header margin
     inner_width = r.cols - 2 * BOARD_MARGIN
     time_w = measure(now_txt)
     # leave 1px gap before inner_right
@@ -312,17 +316,18 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
 
     stop_name = truncate(stop_name, available_w)
 
-    header_baseline = top_margin
-    draw_text(inner_left + 1, header_baseline, stop_name)  # additional 1px inside inner margin
+    header_baseline = HEADER_BASELINE_Y
+    # Header left margin is exactly 1 pixel (inner_left)
+    draw_text(inner_left, header_baseline, stop_name)
     draw_text(time_x, header_baseline, now_txt)
 
     # Rule line
-    rule_y = top_margin + header_line_height + space_after_header
-    for x in range(inner_left, inner_right + 1):
+    rule_y = RULE_Y
+    for x in range(0, r.cols):  # full-width line (ignores horizontal margins)
         off.SetPixel(x, rule_y, *amber)
 
     # Departure rows start at:
-    rows_start_y = BOARD_MARGIN + header_block
+    rows_start_y = DEPARTURES_START_Y
     line_height = CHAR_H + LINE_SPACING
     for idx, row in enumerate(prepared):
         y = rows_start_y + idx * line_height
