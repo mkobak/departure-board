@@ -273,7 +273,14 @@ def run_loop(opts: argparse.Namespace):
     options = RGBMatrixOptions()
     options.rows = opts.rows
     options.cols = opts.cols
-    options.gpio_mapping = opts.gpio_mapping
+    # The rgbmatrix library uses 'hardware_mapping' (older docs sometimes refer to gpio-mapping)
+    # Accept --gpio-mapping CLI for user familiarity but map to hardware_mapping attribute.
+    try:
+        options.hardware_mapping = opts.gpio_mapping  # type: ignore[attr-defined]
+    except AttributeError:  # Fallback if attribute name differs in older lib
+        # Some very old versions used 'gpio_mapping'; if present, set it dynamically.
+        if hasattr(options, 'gpio_mapping'):
+            setattr(options, 'gpio_mapping', opts.gpio_mapping)
     options.brightness = opts.brightness
     options.pwm_lsb_nanoseconds = 130
     options.pwm_dither_bits = 1

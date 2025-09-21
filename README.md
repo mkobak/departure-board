@@ -1,3 +1,4 @@
+departure lines to stdout every refresh interval instead of drawing them.
 # Departure Board (Raspberry Pi RGB LED Matrix)
 
 Displays next Swiss public transport departures on a 128x64 (or compatible) RGB LED matrix
@@ -5,49 +6,55 @@ using the [transport.opendata.ch](https://transport.opendata.ch/) API and the
 [hzeller/rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix) library.
 
 ## Components
-- Raspberry Pi Zero 2 W
-- 128x64 RGB LED panel + Adafruit RGB Matrix HAT
+- Raspberry Pi Zero 2 W (works on other Pi models)
+- 128x64 RGB LED panel + Adafruit RGB Matrix HAT (or compatible)
 
-## Repository Files Added
+## Repository Files
 - `fetch_departures.py` – Fetch & format departures
-- `matrix_departure_board.py` – Main matrix rendering loop (headless Pi)
-- `demo_board.py` – Local Tkinter visual demo / development
-- `departure-board.service` – systemd unit to auto-start on boot
-- `install_on_pi.sh` – Helper script to build dependencies & enable service
-- `requirements.txt` – Python dependency list
+- `matrix_departure_board.py` – Hardware rendering loop
+- `demo_board.py` – Tkinter simulator
+- `departure-board.service` – systemd unit
+- `install_on_pi.sh` – Automated setup (venv + build)
+- `requirements.txt` – Python deps (requests only)
 
-## Quick Start (Manual)
-SSH into the Pi (example hostname `tramboard.local`):
+## Quick Start (Manual, Virtual Environment)
+Raspberry Pi OS Bookworm enforces PEP 668 (externally managed system Python). Use a project venv:
 
 ```bash
-ssh pi@tramboard.local
+ssh mk@tramboard.local
 sudo apt update
-sudo apt install -y git python3 python3-pip python3-dev build-essential
-# Clone your fork
-cd /home/pi
+sudo apt install -y git python3 python3-venv python3-dev build-essential
+
+cd /home/mk
 git clone https://github.com/<youruser>/departure-board.git
 cd departure-board
-pip3 install -r requirements.txt
-# Build hzeller library
-cd ~
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+# Build hzeller library against venv python
+cd /home/mk
 git clone https://github.com/hzeller/rpi-rgb-led-matrix.git
 cd rpi-rgb-led-matrix
-make build-python PYTHON=$(command -v python3)
+make build-python PYTHON=/home/mk/departure-board/.venv/bin/python
 cd bindings/python
-sudo python3 setup.py install
-# Test
-cd /home/pi/departure-board
-sudo python3 matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
+/home/mk/departure-board/.venv/bin/python setup.py install
+
+# Test run (GPIO may require sudo; try without first)
+cd /home/mk/departure-board
+sudo /home/mk/departure-board/.venv/bin/python matrix_departure_board.py \
+	--stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
 ```
 
 Stop with Ctrl+C.
 
-## Using the Install Script
+## Using the Install Script (Automated venv)
 ```bash
-ssh pi@tramboard.local
+ssh mk@tramboard.local
 curl -fsSL https://raw.githubusercontent.com/<youruser>/departure-board/main/install_on_pi.sh | sudo bash
 ```
-Then edit the service if needed:
+Then optionally edit the service:
 ```bash
 sudo systemctl edit --full departure-board.service
 sudo systemctl start departure-board.service
@@ -55,11 +62,11 @@ sudo journalctl -u departure-board.service -f
 ```
 
 ## Systemd Service
-`/etc/systemd/system/departure-board.service` (installed from repo). Key line:
+Example ExecStart after install script:
 ```
-ExecStart=/usr/bin/env python3 /home/pi/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
 ```
-Edit arguments to change stop, brightness, limit, etc.
+Adjust arguments for different stop, brightness, limit, mapping, etc.
 
 Enable & start:
 ```bash
@@ -71,13 +78,12 @@ Check status/logs:
 systemctl status departure-board.service
 journalctl -u departure-board.service -f
 ```
-
 Disable:
 ```bash
 sudo systemctl disable --now departure-board.service
 ```
 
-## Command Line Options (matrix_departure_board.py)
+## Command Line Options
 ```
 --stop <name>          Origin stop/station (default from fetch_departures.STOP)
 --dest <name>          Optional exact destination filter
@@ -86,31 +92,40 @@ sudo systemctl disable --now departure-board.service
 --brightness 0-100     Panel brightness (default 40)
 --rows H               Panel rows (default 64)
 --cols W               Panel columns (default 128)
---gpio-mapping MAP     GPIO mapping (default adafruit-hat)
+--gpio-mapping MAP     Hardware mapping (default adafruit-hat)
 --chain N              Daisy-chained panel count
 --parallel N           Parallel chains
 --all                  Include all transport types (ignore default tram/train filter)
 ```
 
+## Migration from Global Install
+If you previously relied on global `pip3 install`:
+1. Stop service: `sudo systemctl stop departure-board.service`
+2. Create venv: `cd /home/mk/departure-board && python3 -m venv .venv && source .venv/bin/activate`
+3. `pip install -r requirements.txt`
+4. Rebuild rgbmatrix for venv: `make build-python PYTHON=.../.venv/bin/python && (cd bindings/python && .../.venv/bin/python setup.py install)`
+5. Update service ExecStart to `.venv/bin/python`
+6. `sudo systemctl daemon-reload && sudo systemctl restart departure-board.service`
+7. Remove any unneeded global packages (optional).
+
 ## Troubleshooting
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No output / all dark | Service not running or crash | `journalctl -u departure-board.service -f` |
-| Flicker / tearing | Refresh rate too high | Lower `--brightness` or set `options.limit_refresh_rate_hz` inside script |
-| Wrong colors / mapping | Incorrect `--gpio-mapping` | Use `regular`, `adafruit-hat`, etc. |
-| Text truncated too aggressively | Panel size mismatch | Adjust `--cols`/`--rows` or chain/parallel values |
-| ImportError rgbmatrix | Library not built | Re-run build steps (`make build-python` + `setup.py install`) |
-| API errors / 429 | Over-fetching or network issues | Increase refresh interval, check connectivity |
+| Flicker / tearing | Refresh rate too high | Lower `--brightness`; keep limit_refresh_rate_hz moderate |
+| Wrong colors / mapping | Mapping flag mismatch | Try `--gpio-mapping adafruit-hat` (maps to hardware_mapping) |
+| Text truncated too much | Panel size or chain mismatch | Adjust `--cols`/`--rows`/`--chain`/`--parallel` |
+| ImportError rgbmatrix | Binding not installed in venv | Rebuild with venv python & reinstall |
+| API errors / 429 | Too many requests | Increase refresh interval (>=30s) |
 
 ## Developer Mode (No Hardware)
-If `rgbmatrix` library is absent (e.g., on your desktop), the script prints
-departure lines to stdout every refresh interval instead of drawing them.
+If `rgbmatrix` import fails, script prints formatted departures every cycle.
 
 ## Updating
-Pull latest changes, then restart service:
 ```bash
-cd /home/pi/departure-board
+cd /home/mk/departure-board
 git pull
+/home/mk/departure-board/.venv/bin/pip install -r requirements.txt --upgrade
 sudo systemctl restart departure-board.service
 ```
 
@@ -120,19 +135,19 @@ sudo systemctl disable --now departure-board.service
 sudo rm /etc/systemd/system/departure-board.service
 sudo systemctl daemon-reload
 ```
-(Optional) Remove sources:
+Optional cleanup:
 ```bash
-rm -rf /home/pi/departure-board /home/pi/rpi-rgb-led-matrix
+rm -rf /home/mk/departure-board /home/mk/rpi-rgb-led-matrix
 ```
 
 ## API Courtesy
-Avoid very short refresh intervals (<15s) to reduce load. Default 30s is reasonable.
+Avoid very short refresh intervals (<15s). Default 30s balances timeliness and API load.
 
 ## Next Ideas
 - Scroll destinations instead of truncating
-- Add small in-memory cache to smooth network hiccups
-- Show delay (+min) indicator
-- Alternate pages if more departures than fit
+- Show delay / real-time difference
+- Page through more departures
+- Caching + offline fallback
 
 ---
 Enjoy your live tram/train departure board!

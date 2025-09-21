@@ -5,17 +5,19 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/departure-board
-ExecStart=/usr/bin/env python3 /home/pi/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
+User=mk
+Group=mk
+# Working directory with virtual environment
+WorkingDirectory=/home/mk/departure-board
+# Use the virtual environment python so requests (and future deps) are isolated (PEP 668 compliant)
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
 Restart=on-failure
 RestartSec=5
-# Nice value to reduce priority a bit
 Nice=5
 
-# Capability drop (not strictly required but safer); rgbmatrix needs GPIO (root usually). If using root, adjust.
-# If library requires root, comment User/Group above and run as root.
+# If GPIO access fails (permission), either:
+#   1) Run as root (comment User/Group) OR
+#   2) Add user to gpio group: sudo usermod -aG gpio mk (then reboot)
 
 [Install]
 WantedBy=multi-user.target
