@@ -39,7 +39,7 @@ except Exception:  # noqa: BLE001
 
 # --------------------------------------------------------------------------------------
 # Simple 5x7 font (subset). Reuse subset of characters needed for typical display
-# (Digits, basic latin letters, space, apostrophe, dash, umlauts). Can be expanded.
+# (Digits, basic latin letters, space, apostrophe, dash, umlauts).
 # Representation: list of 7 strings of '0'/'1'.
 # --------------------------------------------------------------------------------------
 FONT = {
