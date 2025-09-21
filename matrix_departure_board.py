@@ -122,11 +122,11 @@ FONT = {
 BITMAP = {ch: [[1 if c == '1' else 0 for c in row] for row in rows] for ch, rows in FONT.items()}
 CHAR_W = 5
 CHAR_H = 7
-# Visual advance spacing (same as demo): 1px between glyph runs
+# Visual advance spacing: 1px between glyph runs
 CHAR_SPACING = 1
-# Vertical spacing between rows (demo uses VERT_SPACING=5). We'll adapt header separately.
+# Vertical spacing between rows
 LINE_SPACING = 5
-# Variable advance overrides (match demo_board):
+# Variable advance overrides:
 ADV_WIDTH = {
     ' ': 2,
     '-': 3,
@@ -145,6 +145,7 @@ LINE_ID_DEST_GAP = 5
 DEST_MINS_GAP = 4
 RIGHT_MARGIN = 1
 MIN_IDENT_CHARS = 2
+BOARD_MARGIN = 1  # ensure 1px dark border on all sides
 
 class Renderer:
     def __init__(self, cols: int, rows: int):
@@ -165,8 +166,8 @@ class Renderer:
         return w
 
     def rows_capacity(self, header_block: int) -> int:
-        """Compute how many departure rows fit below header (like demo logic)."""
-        available = self.rows - header_block
+        """Compute how many departure rows fit below header with top/bottom margin."""
+        available = self.rows - header_block - (2 * BOARD_MARGIN)
         line_height = CHAR_H + LINE_SPACING
         full = available // line_height
         leftover = available - full * line_height
@@ -199,9 +200,10 @@ class Renderer:
             digits = str(mins)
             digits_w = self.measure(digits)
             apostrophe_w = self.glyph_width("'")
+            inner_width = self.cols - 2 * BOARD_MARGIN
             total_minutes_w = digits_w + CHAR_SPACING + apostrophe_w + RIGHT_MARGIN
-            digits_start_x = self.cols - total_minutes_w
-            dest_start_x = ident_w + LINE_ID_DEST_GAP
+            digits_start_x = BOARD_MARGIN + inner_width - total_minutes_w
+            dest_start_x = BOARD_MARGIN + ident_w + LINE_ID_DEST_GAP
             max_dest_w = digits_start_x - DEST_MINS_GAP - dest_start_x
             if max_dest_w < 0:
                 max_dest_w = 0
@@ -270,8 +272,12 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
 
     # Header: time right, stop name left truncated, 1px padding on each side.
     now_txt = datetime.now().strftime('%H:%M')
+    inner_left = BOARD_MARGIN
+    inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside margin
+    inner_width = r.cols - 2 * BOARD_MARGIN
     time_w = measure(now_txt)
-    time_x = r.cols - 1 - time_w  # right pad =1
+    # leave 1px gap before inner_right
+    time_x = inner_right - time_w  # already leaves gap since inner_right not drawn on
     # Determine stop name similarly to demo logic
     station_city = fd._station_city(origin)
     if ',' in origin:
@@ -288,7 +294,7 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
             stop_name = alts[-1]
 
     # Truncate stop name to fit before time with at least 1px spacing
-    available_w = time_x - 1 - CHAR_SPACING  # left pad 1 + spacing before time
+    available_w = time_x - inner_left - CHAR_SPACING
     if available_w < 0:
         available_w = 0
 
@@ -307,16 +313,16 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
     stop_name = truncate(stop_name, available_w)
 
     header_baseline = top_margin
-    draw_text(1, header_baseline, stop_name)  # left pad 1
+    draw_text(inner_left + 1, header_baseline, stop_name)  # additional 1px inside inner margin
     draw_text(time_x, header_baseline, now_txt)
 
     # Rule line
     rule_y = top_margin + header_line_height + space_after_header
-    for x in range(r.cols):
+    for x in range(inner_left, inner_right + 1):
         off.SetPixel(x, rule_y, *amber)
 
     # Departure rows start at:
-    rows_start_y = header_block
+    rows_start_y = BOARD_MARGIN + header_block
     line_height = CHAR_H + LINE_SPACING
     for idx, row in enumerate(prepared):
         y = rows_start_y + idx * line_height
@@ -326,17 +332,17 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
         # Right align single char into 2-char column
         if ident_col_chars == MIN_IDENT_CHARS and len(ident) == 1:
             pad = measure('X' * MIN_IDENT_CHARS) - measure(ident)
-            draw_text(pad, y, ident)
+            draw_text(inner_left + pad, y, ident)
         else:
-            draw_text(0, y, ident)
-        dest_start_x = ident_w + LINE_ID_DEST_GAP
+            draw_text(inner_left, y, ident)
+        dest_start_x = inner_left + ident_w + LINE_ID_DEST_GAP
         draw_text(dest_start_x, y, row['dest'])
         mins = row['mins']
         digits_w = measure(mins)
         apostrophe_w = glyph_width("'")
         total_minutes_w = digits_w + CHAR_SPACING + apostrophe_w + RIGHT_MARGIN
-        digits_start_x = r.cols - total_minutes_w
-        apostrophe_x = r.cols - RIGHT_MARGIN - apostrophe_w
+        digits_start_x = inner_left + inner_width - total_minutes_w
+        apostrophe_x = inner_left + inner_width - RIGHT_MARGIN - apostrophe_w
         # Draw digits
         x_cur = digits_start_x
         for i, dch in enumerate(mins):
