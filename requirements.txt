@@ -1,0 +1,2 @@
+requests>=2.32.0,<3
+# rgbmatrix (hzeller/rpi-rgb-led-matrix) is built/installed from source, not via pip
