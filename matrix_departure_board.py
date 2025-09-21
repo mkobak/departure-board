@@ -108,21 +108,41 @@ FONT = {
     'z': ["00000","00000","11111","00010","00100","01000","11111"],
     '-': ["00000","00000","00000","11100","00000","00000","00000"],
     "'": ["10000","10000","10000","00000","00000","00000","00000"],
+    '/': ["00001","00010","00100","00100","01000","10000","10000"],
+    ':': ["00000","01000","00000","00000","01000","00000","00000"],
+    ',': ["00000","00000","00000","00000","00000","00000","01000"],
+    'Ä': ["01110","10001","10001","11111","10001","10001","10001"],
+    'Ö': ["01110","10001","10001","10001","10001","10001","01110"],
+    'Ü': ["10001","10001","10001","10001","10001","10001","01110"],
+    'ä': ["01010","00000","01110","00001","01111","10001","01111"],
+    'ö': ["01010","00000","01110","10001","10001","10001","01110"],
+    'ü': ["01010","00000","10001","10001","10001","10001","01111"],
 }
 
 BITMAP = {ch: [[1 if c == '1' else 0 for c in row] for row in rows] for ch, rows in FONT.items()}
 CHAR_W = 5
 CHAR_H = 7
+# Visual advance spacing (same as demo): 1px between glyph runs
 CHAR_SPACING = 1
-LINE_SPACING = 1  # vertical space between rows (can tweak)
+# Vertical spacing between rows (demo uses VERT_SPACING=5). We'll adapt header separately.
+LINE_SPACING = 5
+# Variable advance overrides (match demo_board):
+ADV_WIDTH = {
+    ' ': 2,
+    '-': 3,
+    "'": 1,
+    ',': 1,
+    ':': 3,
+}
+DESCENDERS = {'p','g','q','y','j'}
 
 # Board size defaults (can override with CLI)
 DEFAULT_ROWS = 64
 DEFAULT_COLS = 128
 
 # Layout constants
-LINE_ID_DEST_GAP = 4
-DEST_MINS_GAP = 3
+LINE_ID_DEST_GAP = 5
+DEST_MINS_GAP = 4
 RIGHT_MARGIN = 1
 MIN_IDENT_CHARS = 2
 
@@ -131,10 +151,12 @@ class Renderer:
         self.cols = cols
         self.rows = rows
 
-    def glyph_width(self, ch: str) -> int:  # monospaced here
-        return CHAR_W
+    def glyph_width(self, ch: str) -> int:
+        return ADV_WIDTH.get(ch, CHAR_W)
 
     def measure(self, text: str) -> int:
+        if not text:
+            return 0
         w = 0
         for i, ch in enumerate(text):
             w += self.glyph_width(ch)
@@ -142,12 +164,17 @@ class Renderer:
                 w += CHAR_SPACING
         return w
 
-    def rows_capacity(self) -> int:
+    def rows_capacity(self, header_block: int) -> int:
+        """Compute how many departure rows fit below header (like demo logic)."""
+        available = self.rows - header_block
         line_height = CHAR_H + LINE_SPACING
-        return self.rows // line_height
+        full = available // line_height
+        leftover = available - full * line_height
+        if leftover >= CHAR_H + 1:  # allow one more if glyph fits sans spacing fully
+            full += 1
+        return full
 
-    def prepare_rows(self, rows: List[Dict[str, Any]], origin: str) -> List[Dict[str, str]]:
-        cap = self.rows_capacity()
+    def prepare_rows(self, rows: List[Dict[str, Any]], origin: str, cap: int) -> List[Dict[str, str]]:
         out: List[Dict[str, str]] = []
         for r in rows[:cap]:
             cat = (r.get('category') or '').strip().upper()
@@ -167,8 +194,7 @@ class Renderer:
             dest = fd._strip_same_city(dest_raw, station_city)
             dest = fd.BAHNHOF_PATTERN.sub('Bhf', dest)
             mins = int(r.get('mins') or 0)
-            mins_text = f"{mins}'"
-            # compute width budget
+            # width budgeting with variable advance
             ident_w = self.measure('X' * ident_col_chars)
             digits = str(mins)
             digits_w = self.measure(digits)
@@ -177,79 +203,150 @@ class Renderer:
             digits_start_x = self.cols - total_minutes_w
             dest_start_x = ident_w + LINE_ID_DEST_GAP
             max_dest_w = digits_start_x - DEST_MINS_GAP - dest_start_x
-            # truncate dest
-            draw_chars = []
+            if max_dest_w < 0:
+                max_dest_w = 0
+            # truncate destination
+            draw_chars: List[str] = []
             cur = 0
             for ch in dest:
-                add = self.glyph_width(ch) if not draw_chars else CHAR_SPACING + self.glyph_width(ch)
+                gw = self.glyph_width(ch)
+                add = gw if not draw_chars else CHAR_SPACING + gw
                 if cur + add > max_dest_w:
                     break
                 draw_chars.append(ch)
                 cur += add
-            dest_draw = ''.join(draw_chars)
             out.append({
                 'ident_display': ident_display,
                 'ident_col_chars': str(ident_col_chars),
-                'dest': dest_draw,
+                'dest': ''.join(draw_chars),
                 'mins': str(mins),
             })
         return out
 
 # Matrix specific drawing -----------------------------------------------------
 
-def draw_frame(matrix: RGBMatrix, renderer: Renderer, prep_rows: List[Dict[str, str]]):  # type: ignore[name-defined]
+def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str):  # type: ignore[name-defined]
     off = matrix.CreateFrameCanvas()
-    line_height = CHAR_H + LINE_SPACING
-    # time header at top-right, stop name truncated left (simple header)
-    now_txt = datetime.now().strftime('%H:%M')
+    amber = (255, 140, 0)
+
     r = renderer
 
+    # Header layout constants (mirroring demo_board)
+    top_margin = 2
+    header_line_height = CHAR_H  # glyph box height
+    space_after_header = 3
+    rule_height = 1
+    space_after_rule = 5
+    header_block = (top_margin + header_line_height + space_after_header +
+                    rule_height + space_after_rule)
+    cap = r.rows_capacity(header_block)
+
+    prepared = r.prepare_rows(rows, origin, cap)
+
+    # Drawing helpers --------------------------------------------------
+    def glyph_width(ch: str) -> int:
+        return r.glyph_width(ch)
+
+    def draw_glyph(x: int, y: int, ch: str):
+        bmp = BITMAP.get(ch, BITMAP[' '])
+        # Descender whole glyph downward shift per demo for specific chars
+        whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
+        for dy, brow in enumerate(bmp):
+            for dx, bit in enumerate(brow[:glyph_width(ch)]):
+                if bit:
+                    off.SetPixel(x+dx, y+dy+whole_offset, *amber)
+
+    def measure(text: str) -> int:
+        return r.measure(text)
+
     def draw_text(x: int, y: int, text: str):
+        cur = x
         for i, ch in enumerate(text):
-            bmp = BITMAP.get(ch, BITMAP[' '])
-            for dy, brow in enumerate(bmp):
-                for dx, bit in enumerate(brow):
-                    if bit:
-                        off.SetPixel(x+dx, y+dy, 255, 140, 0)
-            x += CHAR_W
+            draw_glyph(cur, y, ch)
+            cur += glyph_width(ch)
             if i != len(text) - 1:
-                x += CHAR_SPACING
+                cur += CHAR_SPACING
+        return cur - x
 
-    # Header
-    header_y = 0
-    time_w = r.measure(now_txt)
-    time_x = r.cols - time_w
-    draw_text(time_x, header_y, now_txt)
+    # Header: time right, stop name left truncated, 1px padding on each side.
+    now_txt = datetime.now().strftime('%H:%M')
+    time_w = measure(now_txt)
+    time_x = r.cols - 1 - time_w  # right pad =1
+    # Determine stop name similarly to demo logic
+    station_city = fd._station_city(origin)
+    if ',' in origin:
+        parts = [p.strip() for p in origin.split(',')]
+        if len(parts) >= 2:
+            stop_name = parts[1] or parts[0]
+        else:
+            stop_name = parts[0]
+    else:
+        stop_name = origin.strip()
+    if station_city and stop_name.lower() == station_city.lower():
+        alts = [p.strip() for p in origin.split(',') if p.strip().lower() != station_city.lower()]
+        if alts:
+            stop_name = alts[-1]
 
-    # Horizontal rule under header
-    rule_y = CHAR_H + 0
+    # Truncate stop name to fit before time with at least 1px spacing
+    available_w = time_x - 1 - CHAR_SPACING  # left pad 1 + spacing before time
+    if available_w < 0:
+        available_w = 0
+
+    def truncate(text: str, max_w: int) -> str:
+        acc = []
+        cur = 0
+        for ch in text:
+            w = glyph_width(ch)
+            add = w if not acc else CHAR_SPACING + w
+            if cur + add > max_w:
+                break
+            acc.append(ch)
+            cur += add
+        return ''.join(acc)
+
+    stop_name = truncate(stop_name, available_w)
+
+    header_baseline = top_margin
+    draw_text(1, header_baseline, stop_name)  # left pad 1
+    draw_text(time_x, header_baseline, now_txt)
+
+    # Rule line
+    rule_y = top_margin + header_line_height + space_after_header
     for x in range(r.cols):
-        off.SetPixel(x, rule_y, 255, 140, 0)
+        off.SetPixel(x, rule_y, *amber)
 
-    # Departure rows start below rule
-    start_y = rule_y + 2
-    for idx, row in enumerate(prep_rows):
-        y = start_y + idx * line_height
-        if y + CHAR_H > r.rows:
-            break
+    # Departure rows start at:
+    rows_start_y = header_block
+    line_height = CHAR_H + LINE_SPACING
+    for idx, row in enumerate(prepared):
+        y = rows_start_y + idx * line_height
         ident_col_chars = int(row['ident_col_chars'])
-        ident_w = r.measure('X' * ident_col_chars)
+        ident_w = measure('X' * ident_col_chars)
         ident = row['ident_display']
-        # right align ident in its column if short
+        # Right align single char into 2-char column
         if ident_col_chars == MIN_IDENT_CHARS and len(ident) == 1:
-            pad = r.measure('X' * MIN_IDENT_CHARS) - r.measure(ident)
+            pad = measure('X' * MIN_IDENT_CHARS) - measure(ident)
             draw_text(pad, y, ident)
         else:
             draw_text(0, y, ident)
         dest_start_x = ident_w + LINE_ID_DEST_GAP
         draw_text(dest_start_x, y, row['dest'])
-        # minutes right aligned with apostrophe at fixed board edge -1
         mins = row['mins']
-        digits_w = r.measure(mins)
-        apostrophe_x = r.cols - RIGHT_MARGIN - CHAR_W
-        digits_start_x = apostrophe_x - CHAR_SPACING - digits_w
-        draw_text(digits_start_x, y, mins)
-        draw_text(apostrophe_x, y, "'")
+        digits_w = measure(mins)
+        apostrophe_w = glyph_width("'")
+        total_minutes_w = digits_w + CHAR_SPACING + apostrophe_w + RIGHT_MARGIN
+        digits_start_x = r.cols - total_minutes_w
+        apostrophe_x = r.cols - RIGHT_MARGIN - apostrophe_w
+        # Draw digits
+        x_cur = digits_start_x
+        for i, dch in enumerate(mins):
+            draw_glyph(x_cur, y, dch)
+            x_cur += glyph_width(dch)
+            if i != len(mins) - 1:
+                x_cur += CHAR_SPACING
+        # Apostrophe after spacing
+        # ensure one spacing pixel exists (already accounted in total width calc)
+        draw_glyph(apostrophe_x, y, "'")
 
     matrix.SwapOnVSync(off)
 
@@ -323,8 +420,8 @@ def run_loop(opts: argparse.Namespace):
                 rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
             rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
             rows = rows[:opts.limit]
-            prepared = renderer.prepare_rows(rows, opts.stop)
-            draw_frame(matrix, renderer, prepared)
+            # draw_frame now handles preparation & header, just pass raw rows
+            draw_frame(matrix, renderer, rows, opts.stop)
         except Exception as e:  # noqa: BLE001
             print(f"Error: {e}", file=sys.stderr)
         time.sleep(opts.refresh)
