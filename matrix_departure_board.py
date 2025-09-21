@@ -282,9 +282,21 @@ def run_loop(opts: argparse.Namespace):
         if hasattr(options, 'gpio_mapping'):
             setattr(options, 'gpio_mapping', opts.gpio_mapping)
     options.brightness = opts.brightness
-    options.pwm_lsb_nanoseconds = 130
-    options.pwm_dither_bits = 1
-    options.limit_refresh_rate_hz = 120
+    # Allow user override of PWM / refresh tuning.
+    if opts.pwm_lsb_ns is not None:
+        options.pwm_lsb_nanoseconds = opts.pwm_lsb_ns
+    else:
+        options.pwm_lsb_nanoseconds = 130
+    if opts.dither_bits is not None:
+        options.pwm_dither_bits = opts.dither_bits
+    else:
+        options.pwm_dither_bits = 1
+    if opts.limit_refresh_hz is not None:
+        options.limit_refresh_rate_hz = opts.limit_refresh_hz
+    else:
+        options.limit_refresh_rate_hz = 120
+    if opts.slowdown_gpio is not None:
+        options.gpio_slowdown = opts.slowdown_gpio
     options.multiplexing = 0
     options.pixel_mapper_config = ""
     if opts.chain > 1:
@@ -331,6 +343,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--chain', type=int, default=1, help='Number of daisy-chained panels')
     p.add_argument('--parallel', type=int, default=1, help='Parallel chains')
     p.add_argument('--all', action='store_true', help='Include all transport types (ignore default tram/train)')
+    # Advanced tuning flags (optional)
+    p.add_argument('--slowdown-gpio', type=int, choices=[0,1,2,3,4], default=None,
+                   help='GPIO slowdown (increase if you see flicker/noise)')
+    p.add_argument('--pwm-lsb-ns', type=int, default=None,
+                   help='Override pwm_lsb_nanoseconds (timing of LSB pulse)')
+    p.add_argument('--limit-refresh-hz', type=int, default=None,
+                   help='Hard limit on refresh rate Hz (lower to reduce CPU/flicker)')
+    p.add_argument('--dither-bits', type=int, default=None,
+                   help='Override pwm dither bits (0 to disable, higher = smoother dims)')
     return p.parse_args(argv)
 
 

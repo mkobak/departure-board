@@ -45,7 +45,8 @@ fi
 cd "$RGB_SRC"
 sudo -u "$TARGET_USER" make build-python PYTHON="$VENV_DIR/bin/python"
 cd bindings/python
-sudo -u "$TARGET_USER" "$VENV_DIR/bin/python" setup.py install
+# Install rgbmatrix binding into venv using pip (wheel build) instead of deprecated setup.py install
+sudo -u "$TARGET_USER" bash -c "source '$VENV_DIR/bin/activate' && pip install --no-cache-dir ."
 
 # Copy systemd service unit
 cp "$REPO_DIR/$SERVICE_FILE" /etc/systemd/system/$SERVICE_FILE
