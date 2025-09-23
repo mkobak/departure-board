@@ -378,6 +378,40 @@ def run_loop(opts: argparse.Namespace):
             print('-' * 40)
             time.sleep(opts.refresh)
         return
+    # Optional early rotary encoder init (before heavy RGBMatrix init) -----------------
+    encoder = None
+    encoder_started_early = False
+    def _on_rotate(delta: int):  # noqa: D401
+        nonlocal current_index, last_selected_stop
+        length = len(stop_choices)
+        current_index = (current_index + (1 if delta > 0 else -1)) % length
+        last_selected_stop = stop_choices[current_index]
+
+    # Pre-build stop choices minimally for early init (overwrite later with full list logic)
+    stop_choices = [opts.stop]
+    current_index = 0
+    last_selected_stop = opts.stop
+    if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and getattr(opts, 'encoder_early', False):
+        if opts.encoder_debug:
+            print("[encoder] Early init requested before RGBMatrix", file=sys.stderr)
+        try:
+            if opts.encoder_delay > 0:
+                if opts.encoder_debug:
+                    print(f"[encoder] Sleeping {opts.encoder_delay:.3f}s before early init", file=sys.stderr)
+                time.sleep(opts.encoder_delay)
+            encoder = RotaryEncoder(
+                pin_clk=opts.enc_clk,
+                pin_dt=opts.enc_dt,
+                pin_sw=opts.enc_sw,
+                on_rotate=_on_rotate,
+                force_polling=opts.enc_poll,
+            )
+            encoder.start()
+            encoder_started_early = True
+            print("Rotary encoder active (early)", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"[encoder] Early init failed: {e}", file=sys.stderr)
+
     # Matrix path
     options = RGBMatrixOptions()
     options.rows = opts.rows
@@ -425,9 +459,7 @@ def run_loop(opts: argparse.Namespace):
     renderer = Renderer(opts.cols * opts.chain, opts.rows * opts.parallel)
 
     # Rotary encoder integration ---------------------------------------------
-    # If encoder present, allow cycling through predefined stops with rotation.
-    # Introduce a short delay before initializing encoder to avoid rare timing issues with
-    # other subsystems accessing /dev/mem very early.
+    # If not early-started, start now (after matrix init). Includes full stop choices list.
     stop_choices = [
         "Basel, Aeschenplatz",
         "Basel, Denkmal",
@@ -435,27 +467,19 @@ def run_loop(opts: argparse.Namespace):
     # If user provided a --stop not in list, insert it at front for consistency
     if opts.stop not in stop_choices:
         stop_choices.insert(0, opts.stop)
-    current_index = stop_choices.index(opts.stop)
-    last_selected_stop = opts.stop
+    # If we early started we may have current_index already; else derive now
+    if not encoder_started_early:
+        current_index = stop_choices.index(opts.stop)
+        last_selected_stop = opts.stop
     last_fetch_time = 0.0
     cache_rows: List[Dict[str, Any]] = []
-
-    def _on_rotate(delta: int):  # noqa: D401
-        nonlocal current_index, last_selected_stop
-        # Only toggle between first two by user request; but if more, wrap around
-        length = len(stop_choices)
-        current_index = (current_index + (1 if delta > 0 else -1)) % length
-        last_selected_stop = stop_choices[current_index]
-        # Immediate fetch on change by setting last_fetch_time far in past
-        # (Main loop will detect stop change anyway)
-
-    encoder = None
-    if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False):
+    if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and not encoder_started_early:
         def _start_encoder():
             nonlocal encoder
-            time.sleep(0.25)  # small stabilization delay
+            if opts.encoder_debug:
+                print("[encoder] Delayed post-matrix init start", file=sys.stderr)
+            time.sleep(0.25 if opts.encoder_delay is None else opts.encoder_delay)
             try:
-                # Warn if user selected pins likely conflicting with matrix HAT (common conflicts: 18,19,21,22,23,24)
                 conflict_pins = {18,19,21,22,23,24}
                 user_pins = {opts.enc_clk, opts.enc_dt, opts.enc_sw}
                 if conflict_pins & user_pins:
@@ -468,8 +492,8 @@ def run_loop(opts: argparse.Namespace):
                     force_polling=opts.enc_poll,
                 )
                 encoder.start()
-                print("Rotary encoder active (events or polling): rotate to change stop", file=sys.stderr)
-            except RuntimeError as e:  # attempt fallback by forcing polling via direct import logic
+                print("Rotary encoder active (events or polling)", file=sys.stderr)
+            except RuntimeError as e:
                 print(f"Rotary encoder event init failed ({e}); continuing without encoder.", file=sys.stderr)
                 encoder = None
             except Exception as e:  # noqa: BLE001
@@ -531,6 +555,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering)')
     p.add_argument('--enc-sw', type=int, default=25, help='Rotary encoder switch GPIO (BCM numbering)')
     p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
+    p.add_argument('--encoder-early', action='store_true', help='Initialize rotary encoder before RGBMatrix (try if normal init fails)')
+    p.add_argument('--encoder-delay', type=float, default=0.0, help='Delay seconds before encoder init (early or delayed)')
+    p.add_argument('--encoder-debug', action='store_true', help='Verbose encoder debug messages')
     return p.parse_args(argv)
 
 

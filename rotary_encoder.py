@@ -28,6 +28,8 @@ from __future__ import annotations
 import time
 from typing import Callable, Optional
 import threading
+import os
+import stat
 
 try:  # Prefer RPi.GPIO
     import RPi.GPIO as GPIO  # type: ignore
@@ -55,6 +57,7 @@ class RotaryEncoder:
         debounce_ms: int = 4,
         button_debounce_ms: int = 120,
         force_polling: bool = False,
+        debug: bool = False,
     ) -> None:
         self.pin_clk = pin_clk
         self.pin_dt = pin_dt
@@ -69,6 +72,7 @@ class RotaryEncoder:
         self._poll_thread: Optional[threading.Thread] = None
         self._use_polling = False
         self._force_polling = force_polling
+        self._debug = debug
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -83,6 +87,21 @@ class RotaryEncoder:
             GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             self._last_clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
+            if self._debug:
+                uid = getattr(os, 'getuid', lambda: 'n/a')()
+                gid = getattr(os, 'getgid', lambda: 'n/a')()
+                print(f"[RotaryEncoder] UID={uid} GID={gid} polling={self._force_polling}")
+                for dev in ("/dev/gpiomem","/dev/mem"):
+                    try:
+                        st = os.stat(dev)
+                        mode = stat.filemode(st.st_mode)
+                        print(f"[RotaryEncoder] {dev} exists mode={mode} owner={st.st_uid}:{st.st_gid}")
+                        if os.access(dev, os.R_OK|os.W_OK):
+                            print(f"[RotaryEncoder] Access RW OK for {dev}")
+                        else:
+                            print(f"[RotaryEncoder] Access RW DENIED for {dev}")
+                    except FileNotFoundError:
+                        print(f"[RotaryEncoder] {dev} missing")
             if not self._force_polling:
                 try:
                     # Primary strategy: hardware event detection
