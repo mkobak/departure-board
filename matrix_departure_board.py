@@ -450,12 +450,23 @@ def run_loop(opts: argparse.Namespace):
         # (Main loop will detect stop change anyway)
 
     encoder = None
-    if _HAVE_ENCODER and RotaryEncoder is not None:
+    if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False):
         def _start_encoder():
             nonlocal encoder
             time.sleep(0.25)  # small stabilization delay
             try:
-                encoder = RotaryEncoder(on_rotate=_on_rotate)  # type: ignore[operator]
+                # Warn if user selected pins likely conflicting with matrix HAT (common conflicts: 18,19,21,22,23,24)
+                conflict_pins = {18,19,21,22,23,24}
+                user_pins = {opts.enc_clk, opts.enc_dt, opts.enc_sw}
+                if conflict_pins & user_pins:
+                    print(f"[encoder] Warning: chosen pins {user_pins & conflict_pins} may be used by the RGB matrix HAT and could cause failures.", file=sys.stderr)
+                encoder = RotaryEncoder(
+                    pin_clk=opts.enc_clk,
+                    pin_dt=opts.enc_dt,
+                    pin_sw=opts.enc_sw,
+                    on_rotate=_on_rotate,  # type: ignore[operator]
+                    force_polling=opts.enc_poll,
+                )
                 encoder.start()
                 print("Rotary encoder active (events or polling): rotate to change stop", file=sys.stderr)
             except RuntimeError as e:  # attempt fallback by forcing polling via direct import logic
@@ -514,6 +525,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Hard limit on refresh rate Hz (lower to reduce CPU/flicker)')
     p.add_argument('--dither-bits', type=int, default=None,
                    help='Override pwm dither bits (0 to disable, higher = smoother dims)')
+    # Rotary encoder options
+    p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
+    p.add_argument('--enc-clk', type=int, default=10, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
+    p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering)')
+    p.add_argument('--enc-sw', type=int, default=25, help='Rotary encoder switch GPIO (BCM numbering)')
+    p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
     return p.parse_args(argv)
 
 

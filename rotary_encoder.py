@@ -54,6 +54,7 @@ class RotaryEncoder:
         on_button: Optional[Callable[[], None]] = None,
         debounce_ms: int = 4,
         button_debounce_ms: int = 120,
+        force_polling: bool = False,
     ) -> None:
         self.pin_clk = pin_clk
         self.pin_dt = pin_dt
@@ -67,6 +68,7 @@ class RotaryEncoder:
         self._last_clk_state: Optional[int] = None
         self._poll_thread: Optional[threading.Thread] = None
         self._use_polling = False
+        self._force_polling = force_polling
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -81,13 +83,15 @@ class RotaryEncoder:
             GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             self._last_clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-            try:
-                # Primary strategy: hardware event detection
-                GPIO.add_event_detect(self.pin_clk, GPIO.BOTH, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
-                GPIO.add_event_detect(self.pin_sw, GPIO.FALLING, callback=self._button_callback, bouncetime=self.button_debounce_ms)  # type: ignore[attr-defined]
-            except RuntimeError as e:
-                # Fallback: polling loop (no event detection). This avoids /dev/mem issues if they arise only
-                # when installing edge detection (rare corner case). Poll every 2ms.
+            if not self._force_polling:
+                try:
+                    # Primary strategy: hardware event detection
+                    GPIO.add_event_detect(self.pin_clk, GPIO.BOTH, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
+                    GPIO.add_event_detect(self.pin_sw, GPIO.FALLING, callback=self._button_callback, bouncetime=self.button_debounce_ms)  # type: ignore[attr-defined]
+                except RuntimeError:
+                    # Fallback to polling if event detection not possible
+                    self._force_polling = True
+            if self._force_polling:
                 self._use_polling = True
                 def _poll():  # inner thread function
                     while self._running:
