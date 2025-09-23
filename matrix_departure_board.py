@@ -27,7 +27,7 @@ import signal
 import sys
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 import fetch_departures as fd
 import threading
@@ -237,8 +237,17 @@ class Renderer:
 
 # Matrix specific drawing -----------------------------------------------------
 
-def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str):  # type: ignore[name-defined]
-    off = matrix.CreateFrameCanvas()
+def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str):  # type: ignore[name-defined]
+    """Draw a complete frame.
+
+    off: off-screen canvas (re-used each frame)
+    rows: departures (empty => blank list area)
+    origin: stop name for header
+    """
+    # Clear (fill black) first – using direct pixel loops (fast enough for 128x64)
+    for y in range(renderer.rows):
+        for x in range(renderer.cols):
+            off.SetPixel(x, y, 0, 0, 0)
     amber = (255, 140, 0)
 
     r = renderer
@@ -360,7 +369,7 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
         # ensure one spacing pixel exists (already accounted in total width calc)
         draw_glyph(apostrophe_x, y, "'")
 
-    matrix.SwapOnVSync(off)
+    return matrix.SwapOnVSync(off)
 
 
 def run_loop(opts: argparse.Namespace):
@@ -378,33 +387,48 @@ def run_loop(opts: argparse.Namespace):
             print('-' * 40)
             time.sleep(opts.refresh)
         return
-    # Build stop choices once (used by encoder rotation)
-    stop_choices = [
-        "Basel, Aeschenplatz",
-        "Basel, Denkmal",
-    ]
+    # Build stop choices (feel free to extend list here or later from config)
+    stop_choices = ["Basel, Aeschenplatz", "Basel, Denkmal"]
     if opts.stop not in stop_choices:
         stop_choices.insert(0, opts.stop)
 
-    # State variables for rotation-driven logic
-    current_index = stop_choices.index(opts.stop)
-    last_selected_stop = opts.stop
-    rotation_first_time = 0.0  # time of first tick in a burst
-    rotation_pending = False   # whether a fetch for new stop is pending
-    header_stop = opts.stop  # stop currently shown in header
-    last_fetched_stop = opts.stop  # stop for which cache_rows reflects departures
+    # --- Simplified State Machine --------------------------------------------------
+    current_index = stop_choices.index(opts.stop)  # active stop index
+    header_stop = stop_choices[current_index]      # stop shown in header
+    departures: List[Dict[str, Any]] = []          # last fetched departures for header_stop
+    last_fetch_time = 0.0                          # timestamp of last successful fetch
+    next_scheduled_fetch = 0.0                     # when to fetch (rotation delay, periodic refresh)
+    fetch_interval = max(15.0, float(opts.refresh))  # periodic refresh (>=15s)
+    rotate_fetch_delay = max(0.05, getattr(opts, 'rotate_fetch_delay', 0.5))
     encoder = None
     encoder_started_early = False
+    last_rotation_accept = 0.0                     # debounce accepted rotation time
+    rotation_min_interval = 0.08                   # seconds between accepted detents
 
-    def _on_rotate(delta: int):  # noqa: D401
-        nonlocal current_index, last_selected_stop, rotation_first_time, rotation_pending
-        length = len(stop_choices)
-        current_index = (current_index + (1 if delta > 0 else -1)) % length
-        last_selected_stop = stop_choices[current_index]
+    rotation_queue: List[int] = []                 # accumulate raw deltas (optional future use)
+
+    def schedule_fetch(delay: float = 0.0):
+        nonlocal next_scheduled_fetch
+        t = time.time() + delay
+        if next_scheduled_fetch == 0.0 or t < next_scheduled_fetch:
+            next_scheduled_fetch = t
+
+    def _accept_rotation(direction: int):
+        nonlocal current_index, header_stop, departures
+        current_index = (current_index + (1 if direction > 0 else -1)) % len(stop_choices)
+        header_stop = stop_choices[current_index]
+        # Blank departures immediately – display will show empty area for half second
+        departures = []
+        schedule_fetch(rotate_fetch_delay)
+
+    def _on_rotate(raw_delta: int):  # noqa: D401
+        nonlocal last_rotation_accept
         now = time.time()
-        if not rotation_pending:
-            rotation_first_time = now
-            rotation_pending = True
+        if now - last_rotation_accept < rotation_min_interval:
+            return  # debounce / noise filter
+        last_rotation_accept = now
+        direction = 1 if raw_delta > 0 else -1
+        _accept_rotation(direction)
 
     # Early encoder init (before RGBMatrix) if requested
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and getattr(opts, 'encoder_early', False):
@@ -522,57 +546,46 @@ def run_loop(opts: argparse.Namespace):
         # If hour rolled beyond day, let datetime handle day rollover by adding difference
         return future.timestamp()
 
-    # Initial fetch & draw
-    cache_rows: List[Dict[str, Any]] = fetch_rows(opts.stop)
-    draw_frame(matrix, renderer, cache_rows, opts.stop)
-    last_fetched_stop = opts.stop
-    next_boundary = next_half_minute_boundary(time.time())
+    # --- Initial fetch scheduling --------------------------------------------------
+    schedule_fetch(0.0)  # fetch immediately on start
+    next_periodic_refresh = time.time() + fetch_interval
 
-    rotate_delay = max(0.0, getattr(opts, 'rotate_fetch_delay', 0.5))
+    # Single off-screen canvas reused (fix for CreateFrameCanvas spam)
+    offscreen = matrix.CreateFrameCanvas()
+    offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop)  # blank first frame
 
     running = True
-    def handle_sig(signum, frame):  # noqa: D401, ANN001
+    def _sig_handler(signum, frame):  # noqa: D401, ANN001
         nonlocal running
         running = False
-    signal.signal(signal.SIGINT, handle_sig)
-    signal.signal(signal.SIGTERM, handle_sig)
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
 
     try:
         while running:
             now = time.time()
-            # Update header immediately if rotation changed selected stop
-            if rotation_pending and last_selected_stop != header_stop:
-                header_stop = last_selected_stop
-                opts.stop = header_stop
-                # redraw header with existing cached departures (old stop data) immediately
-                draw_frame(matrix, renderer, cache_rows, header_stop)
-            # Decide if we need to fetch due to rotation delay expiry
-            if rotation_pending and (now - rotation_first_time) >= rotate_delay and last_fetched_stop != last_selected_stop:
+            # Fetch if scheduled
+            if next_scheduled_fetch and now >= next_scheduled_fetch:
                 try:
-                    cache_rows = fetch_rows(last_selected_stop)
-                    last_fetched_stop = last_selected_stop
-                    draw_frame(matrix, renderer, cache_rows, last_selected_stop)
+                    departures = fetch_rows(header_stop)
+                    last_fetch_time = now
                 except Exception as e:  # noqa: BLE001
-                    print(f"Error rotation fetch: {e}", file=sys.stderr)
+                    print(f"[fetch] Error fetching departures for '{header_stop}': {e}", file=sys.stderr)
                 finally:
-                    rotation_pending = False
-            # Clock boundary fetch
-            if now >= next_boundary:
-                try:
-                    cache_rows = fetch_rows(last_selected_stop)
-                    last_fetched_stop = last_selected_stop
-                    draw_frame(matrix, renderer, cache_rows, last_selected_stop)
-                except Exception as e:  # noqa: BLE001
-                    print(f"Error boundary fetch: {e}", file=sys.stderr)
-                next_boundary = next_half_minute_boundary(now + 0.1)
-            # Sleep until next interesting event
-            # Compute times
-            time_to_boundary = max(0.01, next_boundary - now)
-            time_to_rotation_fetch = 999.0
-            if rotation_pending:
-                time_to_rotation_fetch = max(0.0, (rotation_first_time + rotate_delay) - now)
-            sleep_for = min(0.1, time_to_boundary, time_to_rotation_fetch)
-            time.sleep(sleep_for)
+                    next_scheduled_fetch = 0.0
+                    next_periodic_refresh = now + fetch_interval
+            # Periodic refresh if stale (even without rotation)
+            if departures and now >= next_periodic_refresh:
+                schedule_fetch(0.0)
+                next_periodic_refresh = now + fetch_interval
+            # Redraw every loop (lightweight) – header may change instantly on rotation
+            offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop)
+            # Compute dynamic sleep (shorter while we're waiting for a scheduled fetch soon)
+            sleep_target = 0.1
+            if next_scheduled_fetch:
+                until_fetch = max(0.0, next_scheduled_fetch - time.time())
+                sleep_target = min(sleep_target, max(0.02, until_fetch))
+            time.sleep(sleep_target)
     finally:
         if encoder:
             try:
