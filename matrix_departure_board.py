@@ -389,20 +389,22 @@ def run_loop(opts: argparse.Namespace):
     # State variables for rotation-driven logic
     current_index = stop_choices.index(opts.stop)
     last_selected_stop = opts.stop
-    rotation_last_time = 0.0
-    rotation_happened = False
+    rotation_first_time = 0.0  # time of first tick in a burst
+    rotation_pending = False   # whether a fetch for new stop is pending
     header_stop = opts.stop  # stop currently shown in header
     last_fetched_stop = opts.stop  # stop for which cache_rows reflects departures
     encoder = None
     encoder_started_early = False
 
     def _on_rotate(delta: int):  # noqa: D401
-        nonlocal current_index, last_selected_stop, rotation_last_time, rotation_happened
+        nonlocal current_index, last_selected_stop, rotation_first_time, rotation_pending
         length = len(stop_choices)
         current_index = (current_index + (1 if delta > 0 else -1)) % length
         last_selected_stop = stop_choices[current_index]
-        rotation_last_time = time.time()
-        rotation_happened = True
+        now = time.time()
+        if not rotation_pending:
+            rotation_first_time = now
+            rotation_pending = True
 
     # Early encoder init (before RGBMatrix) if requested
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and getattr(opts, 'encoder_early', False):
@@ -539,13 +541,13 @@ def run_loop(opts: argparse.Namespace):
         while running:
             now = time.time()
             # Update header immediately if rotation changed selected stop
-            if rotation_happened and last_selected_stop != header_stop:
+            if rotation_pending and last_selected_stop != header_stop:
                 header_stop = last_selected_stop
                 opts.stop = header_stop
                 # redraw header with existing cached departures (old stop data) immediately
                 draw_frame(matrix, renderer, cache_rows, header_stop)
             # Decide if we need to fetch due to rotation delay expiry
-            if rotation_happened and (now - rotation_last_time) >= rotate_delay and last_fetched_stop != last_selected_stop:
+            if rotation_pending and (now - rotation_first_time) >= rotate_delay and last_fetched_stop != last_selected_stop:
                 try:
                     cache_rows = fetch_rows(last_selected_stop)
                     last_fetched_stop = last_selected_stop
@@ -553,8 +555,7 @@ def run_loop(opts: argparse.Namespace):
                 except Exception as e:  # noqa: BLE001
                     print(f"Error rotation fetch: {e}", file=sys.stderr)
                 finally:
-                    # Reset rotation flag so we don't refetch until another movement
-                    rotation_happened = False
+                    rotation_pending = False
             # Clock boundary fetch
             if now >= next_boundary:
                 try:
@@ -568,8 +569,8 @@ def run_loop(opts: argparse.Namespace):
             # Compute times
             time_to_boundary = max(0.01, next_boundary - now)
             time_to_rotation_fetch = 999.0
-            if rotation_happened:
-                time_to_rotation_fetch = max(0.0, (rotation_last_time + rotate_delay) - now)
+            if rotation_pending:
+                time_to_rotation_fetch = max(0.0, (rotation_first_time + rotate_delay) - now)
             sleep_for = min(0.1, time_to_boundary, time_to_rotation_fetch)
             time.sleep(sleep_for)
     finally:
@@ -604,9 +605,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Override pwm dither bits (0 to disable, higher = smoother dims)')
     # Rotary encoder options
     p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
-    p.add_argument('--enc-clk', type=int, default=10, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
-    p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering)')
-    p.add_argument('--enc-sw', type=int, default=25, help='Rotary encoder switch GPIO (BCM numbering)')
+    p.add_argument('--enc-clk', type=int, default=5, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
+    p.add_argument('--enc-dt', type=int, default=6, help='Rotary encoder DT (B) GPIO (BCM numbering)')
+    p.add_argument('--enc-sw', type=int, default=26, help='Rotary encoder switch GPIO (BCM numbering)')
     p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
     p.add_argument('--encoder-early', action='store_true', help='Initialize rotary encoder before RGBMatrix (try if normal init fails)')
     p.add_argument('--encoder-delay', type=float, default=0.0, help='Delay seconds before encoder init (early or delayed)')
