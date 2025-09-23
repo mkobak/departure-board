@@ -378,19 +378,33 @@ def run_loop(opts: argparse.Namespace):
             print('-' * 40)
             time.sleep(opts.refresh)
         return
-    # Optional early rotary encoder init (before heavy RGBMatrix init) -----------------
+    # Build stop choices once (used by encoder rotation)
+    stop_choices = [
+        "Basel, Aeschenplatz",
+        "Basel, Denkmal",
+    ]
+    if opts.stop not in stop_choices:
+        stop_choices.insert(0, opts.stop)
+
+    # State variables for rotation-driven logic
+    current_index = stop_choices.index(opts.stop)
+    last_selected_stop = opts.stop
+    rotation_last_time = 0.0
+    rotation_happened = False
+    header_stop = opts.stop  # stop currently shown in header
+    last_fetched_stop = opts.stop  # stop for which cache_rows reflects departures
     encoder = None
     encoder_started_early = False
+
     def _on_rotate(delta: int):  # noqa: D401
-        nonlocal current_index, last_selected_stop
+        nonlocal current_index, last_selected_stop, rotation_last_time, rotation_happened
         length = len(stop_choices)
         current_index = (current_index + (1 if delta > 0 else -1)) % length
         last_selected_stop = stop_choices[current_index]
+        rotation_last_time = time.time()
+        rotation_happened = True
 
-    # Pre-build stop choices minimally for early init (overwrite later with full list logic)
-    stop_choices = [opts.stop]
-    current_index = 0
-    last_selected_stop = opts.stop
+    # Early encoder init (before RGBMatrix) if requested
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and getattr(opts, 'encoder_early', False):
         if opts.encoder_debug:
             print("[encoder] Early init requested before RGBMatrix", file=sys.stderr)
@@ -449,30 +463,9 @@ def run_loop(opts: argparse.Namespace):
 
     matrix = RGBMatrix(options = options)
 
-    running = True
-    def handle_sig(signum, frame):  # noqa: D401, ANN001
-        nonlocal running
-        running = False
-    signal.signal(signal.SIGINT, handle_sig)
-    signal.signal(signal.SIGTERM, handle_sig)
-
     renderer = Renderer(opts.cols * opts.chain, opts.rows * opts.parallel)
 
-    # Rotary encoder integration ---------------------------------------------
-    # If not early-started, start now (after matrix init). Includes full stop choices list.
-    stop_choices = [
-        "Basel, Aeschenplatz",
-        "Basel, Denkmal",
-    ]
-    # If user provided a --stop not in list, insert it at front for consistency
-    if opts.stop not in stop_choices:
-        stop_choices.insert(0, opts.stop)
-    # If we early started we may have current_index already; else derive now
-    if not encoder_started_early:
-        current_index = stop_choices.index(opts.stop)
-        last_selected_stop = opts.stop
-    last_fetch_time = 0.0
-    cache_rows: List[Dict[str, Any]] = []
+    # Rotary encoder integration (post-matrix init if not early) ----------------------
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and not encoder_started_early:
         def _start_encoder():
             nonlocal encoder
@@ -501,24 +494,84 @@ def run_loop(opts: argparse.Namespace):
                 encoder = None
         threading.Thread(target=_start_encoder, daemon=True).start()
 
+    # Fetch helper
+    def fetch_rows(stop_name: str) -> List[Dict[str, Any]]:
+        rows = fd.fetch_stationboard(stop_name, opts.limit * 4, transportations=None if opts.all else ['tram','train'])
+        if opts.dest:
+            nf = fd._normalize(opts.dest)
+            rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
+        rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
+        return rows[:opts.limit]
+
+    # Compute next :00 or :30 boundary timestamp (epoch seconds)
+    def next_half_minute_boundary(ts: float) -> float:
+        dt = datetime.fromtimestamp(ts)
+        sec = dt.second
+        if sec < 30:
+            target_sec = 30
+            target_min = dt.minute
+            target_hr = dt.hour
+        else:
+            target_sec = 0
+            # advance minute
+            target_min = (dt.minute + 1) % 60
+            target_hr = dt.hour + 1 if target_min == 0 else dt.hour
+        future = dt.replace(hour=target_hr % 24, minute=target_min, second=target_sec, microsecond=0)
+        # If hour rolled beyond day, let datetime handle day rollover by adding difference
+        return future.timestamp()
+
+    # Initial fetch & draw
+    cache_rows: List[Dict[str, Any]] = fetch_rows(opts.stop)
+    draw_frame(matrix, renderer, cache_rows, opts.stop)
+    last_fetched_stop = opts.stop
+    next_boundary = next_half_minute_boundary(time.time())
+
+    rotate_delay = max(0.0, getattr(opts, 'rotate_fetch_delay', 0.5))
+
+    running = True
+    def handle_sig(signum, frame):  # noqa: D401, ANN001
+        nonlocal running
+        running = False
+    signal.signal(signal.SIGINT, handle_sig)
+    signal.signal(signal.SIGTERM, handle_sig)
+
     try:
         while running:
-            try:
-                # Detect selection change
-                sel_stop = last_selected_stop
-                if sel_stop != opts.stop:
-                    # Update opts.stop so downstream header uses new stop
-                    opts.stop = sel_stop
-                rows = fd.fetch_stationboard(opts.stop, opts.limit * 4, transportations=None if opts.all else ['tram','train'])
-                if opts.dest:
-                    nf = fd._normalize(opts.dest)
-                    rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
-                rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
-                rows = rows[:opts.limit]
-                draw_frame(matrix, renderer, rows, opts.stop)
-            except Exception as e:  # noqa: BLE001
-                print(f"Error: {e}", file=sys.stderr)
-            time.sleep(opts.refresh)
+            now = time.time()
+            # Update header immediately if rotation changed selected stop
+            if rotation_happened and last_selected_stop != header_stop:
+                header_stop = last_selected_stop
+                opts.stop = header_stop
+                # redraw header with existing cached departures (old stop data) immediately
+                draw_frame(matrix, renderer, cache_rows, header_stop)
+            # Decide if we need to fetch due to rotation delay expiry
+            if rotation_happened and (now - rotation_last_time) >= rotate_delay and last_fetched_stop != last_selected_stop:
+                try:
+                    cache_rows = fetch_rows(last_selected_stop)
+                    last_fetched_stop = last_selected_stop
+                    draw_frame(matrix, renderer, cache_rows, last_selected_stop)
+                except Exception as e:  # noqa: BLE001
+                    print(f"Error rotation fetch: {e}", file=sys.stderr)
+                finally:
+                    # Reset rotation flag so we don't refetch until another movement
+                    rotation_happened = False
+            # Clock boundary fetch
+            if now >= next_boundary:
+                try:
+                    cache_rows = fetch_rows(last_selected_stop)
+                    last_fetched_stop = last_selected_stop
+                    draw_frame(matrix, renderer, cache_rows, last_selected_stop)
+                except Exception as e:  # noqa: BLE001
+                    print(f"Error boundary fetch: {e}", file=sys.stderr)
+                next_boundary = next_half_minute_boundary(now + 0.1)
+            # Sleep until next interesting event
+            # Compute times
+            time_to_boundary = max(0.01, next_boundary - now)
+            time_to_rotation_fetch = 999.0
+            if rotation_happened:
+                time_to_rotation_fetch = max(0.0, (rotation_last_time + rotate_delay) - now)
+            sleep_for = min(0.1, time_to_boundary, time_to_rotation_fetch)
+            time.sleep(sleep_for)
     finally:
         if encoder:
             try:
@@ -558,6 +611,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--encoder-early', action='store_true', help='Initialize rotary encoder before RGBMatrix (try if normal init fails)')
     p.add_argument('--encoder-delay', type=float, default=0.0, help='Delay seconds before encoder init (early or delayed)')
     p.add_argument('--encoder-debug', action='store_true', help='Verbose encoder debug messages')
+    p.add_argument('--rotate-fetch-delay', type=float, default=0.5,
+                   help='Delay seconds after rotation before fetching new departures (immediate header update)')
     return p.parse_args(argv)
 
 
