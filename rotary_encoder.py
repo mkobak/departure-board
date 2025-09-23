@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import time
 from typing import Callable, Optional
+import threading
 
 try:  # Prefer RPi.GPIO
     import RPi.GPIO as GPIO  # type: ignore
@@ -64,6 +65,8 @@ class RotaryEncoder:
         self._running = False
         self._last_button_time = 0.0
         self._last_clk_state: Optional[int] = None
+        self._poll_thread: Optional[threading.Thread] = None
+        self._use_polling = False
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -72,14 +75,59 @@ class RotaryEncoder:
             return
         # All GPIO attribute access guarded by _HAVE_GPIO, but static analyzers on non-Pi
         # systems see GPIO as None; add type: ignore to suppress false positives.
-        GPIO.setmode(GPIO.BCM)  # type: ignore[attr-defined]
-        GPIO.setup(self.pin_clk, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
-        GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
-        GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
-        self._last_clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-        # Use edge detection on CLK; sample DT to determine direction.
-        GPIO.add_event_detect(self.pin_clk, GPIO.BOTH, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
-        GPIO.add_event_detect(self.pin_sw, GPIO.FALLING, callback=self._button_callback, bouncetime=self.button_debounce_ms)  # type: ignore[attr-defined]
+        try:
+            GPIO.setmode(GPIO.BCM)  # type: ignore[attr-defined]
+            GPIO.setup(self.pin_clk, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
+            GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
+            GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
+            self._last_clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
+            try:
+                # Primary strategy: hardware event detection
+                GPIO.add_event_detect(self.pin_clk, GPIO.BOTH, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
+                GPIO.add_event_detect(self.pin_sw, GPIO.FALLING, callback=self._button_callback, bouncetime=self.button_debounce_ms)  # type: ignore[attr-defined]
+            except RuntimeError as e:
+                # Fallback: polling loop (no event detection). This avoids /dev/mem issues if they arise only
+                # when installing edge detection (rare corner case). Poll every 2ms.
+                self._use_polling = True
+                def _poll():  # inner thread function
+                    while self._running:
+                        try:
+                            clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
+                            if clk_state != self._last_clk_state:
+                                dt_state = GPIO.input(self.pin_dt)  # type: ignore[attr-defined]
+                                if dt_state != clk_state:
+                                    delta = 1
+                                else:
+                                    delta = -1
+                                self._last_clk_state = clk_state
+                                if self.on_rotate:
+                                    try:
+                                        self.on_rotate(delta)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                            # Simple button poll (active low)
+                            if self.on_button:
+                                if GPIO.input(self.pin_sw) == 0:  # type: ignore[attr-defined]
+                                    now = time.time()
+                                    if now - self._last_button_time >= (self.button_debounce_ms / 1000.0):
+                                        self._last_button_time = now
+                                        try:
+                                            self.on_button()
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                            time.sleep(0.002)
+                        except Exception:
+                            time.sleep(0.01)
+                self._running = True  # mark before starting thread
+                self._poll_thread = threading.Thread(target=_poll, daemon=True)
+                self._poll_thread.start()
+                return
+        except RuntimeError as e:  # typical /dev/mem permission issues during basic setup
+            raise RuntimeError(
+                f"GPIO init failed early ({e}). Steps: ensure /dev/gpiomem accessible, no conflicting daemon, run with sudo or gpio group."  # noqa: E501
+            ) from e
+        except Exception:
+            raise
         self._running = True
 
     def stop(self) -> None:
@@ -88,12 +136,16 @@ class RotaryEncoder:
         if not self._running:
             return
         try:
-            GPIO.remove_event_detect(self.pin_clk)  # type: ignore[attr-defined]
-            GPIO.remove_event_detect(self.pin_sw)  # type: ignore[attr-defined]
+            if not self._use_polling:
+                GPIO.remove_event_detect(self.pin_clk)  # type: ignore[attr-defined]
+                GPIO.remove_event_detect(self.pin_sw)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
         GPIO.cleanup([self.pin_clk, self.pin_dt, self.pin_sw])  # type: ignore[attr-defined]
         self._running = False
+        if self._poll_thread and self._poll_thread.is_alive():
+            # Thread will exit naturally on next loop since _running False.
+            self._poll_thread = None
 
     # Internal callbacks --------------------------------------------------
     def _clk_callback(self, channel: int) -> None:  # noqa: D401, ANN001
