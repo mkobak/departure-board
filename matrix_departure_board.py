@@ -30,6 +30,12 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import fetch_departures as fd
+try:
+    from rotary_encoder import RotaryEncoder  # type: ignore
+    _HAVE_ENCODER = True
+except Exception:  # noqa: BLE001
+    RotaryEncoder = None  # type: ignore
+    _HAVE_ENCODER = False
 
 try:
     from rgbmatrix import RGBMatrix, RGBMatrixOptions  # type: ignore
@@ -235,7 +241,7 @@ def draw_frame(matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]]
     amber = (255, 140, 0)
 
     r = renderer
-    
+
     # Layout constants:
     HEADER_BASELINE_Y = 2
     RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3  # 2 + 7 + 3 = 12
@@ -417,19 +423,63 @@ def run_loop(opts: argparse.Namespace):
 
     renderer = Renderer(opts.cols * opts.chain, opts.rows * opts.parallel)
 
-    while running:
+    # Rotary encoder integration ---------------------------------------------
+    # If encoder present, allow cycling through predefined stops with rotation.
+    stop_choices = [
+        "Basel, Aeschenplatz",
+        "Basel, Denkmal",
+    ]
+    # If user provided a --stop not in list, insert it at front for consistency
+    if opts.stop not in stop_choices:
+        stop_choices.insert(0, opts.stop)
+    current_index = stop_choices.index(opts.stop)
+    last_selected_stop = opts.stop
+    last_fetch_time = 0.0
+    cache_rows: List[Dict[str, Any]] = []
+
+    def _on_rotate(delta: int):  # noqa: D401
+        nonlocal current_index, last_selected_stop
+        # Only toggle between first two by user request; but if more, wrap around
+        length = len(stop_choices)
+        current_index = (current_index + (1 if delta > 0 else -1)) % length
+        last_selected_stop = stop_choices[current_index]
+        # Immediate fetch on change by setting last_fetch_time far in past
+        # (Main loop will detect stop change anyway)
+
+    encoder = None
+    if _HAVE_ENCODER and RotaryEncoder is not None:
         try:
-            rows = fd.fetch_stationboard(opts.stop, opts.limit * 4, transportations=None if opts.all else ['tram','train'])
-            if opts.dest:
-                nf = fd._normalize(opts.dest)
-                rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
-            rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
-            rows = rows[:opts.limit]
-            # draw_frame now handles preparation & header, just pass raw rows
-            draw_frame(matrix, renderer, rows, opts.stop)
+            encoder = RotaryEncoder(on_rotate=_on_rotate)
+            encoder.start()
+            print("Rotary encoder active: rotate to change stop", file=sys.stderr)
         except Exception as e:  # noqa: BLE001
-            print(f"Error: {e}", file=sys.stderr)
-        time.sleep(opts.refresh)
+            print(f"Failed to init rotary encoder: {e}", file=sys.stderr)
+            encoder = None
+
+    try:
+        while running:
+            try:
+                # Detect selection change
+                sel_stop = last_selected_stop
+                if sel_stop != opts.stop:
+                    # Update opts.stop so downstream header uses new stop
+                    opts.stop = sel_stop
+                rows = fd.fetch_stationboard(opts.stop, opts.limit * 4, transportations=None if opts.all else ['tram','train'])
+                if opts.dest:
+                    nf = fd._normalize(opts.dest)
+                    rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
+                rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
+                rows = rows[:opts.limit]
+                draw_frame(matrix, renderer, rows, opts.stop)
+            except Exception as e:  # noqa: BLE001
+                print(f"Error: {e}", file=sys.stderr)
+            time.sleep(opts.refresh)
+    finally:
+        if encoder:
+            try:
+                encoder.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:

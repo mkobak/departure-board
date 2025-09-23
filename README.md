@@ -1,13 +1,14 @@
 departure lines to stdout every refresh interval instead of drawing them.
 # Departure Board (Raspberry Pi RGB LED Matrix)
 
-Displays next Swiss public transport departures on a 128x64 (or compatible) RGB LED matrix
+Displays next Swiss public transport departures on a 128x64 RGB LED matrix
 using the [transport.opendata.ch](https://transport.opendata.ch/) API and the
 [hzeller/rpi-rgb-led-matrix](https://github.com/hzeller/rpi-rgb-led-matrix) library.
 
 ## Components
-- Raspberry Pi Zero 2 W (works on other Pi models)
-- 128x64 RGB LED panel + Adafruit RGB Matrix HAT (or compatible)
+- Raspberry Pi Zero 2 W
+- 128x64 RGB LED panel + Adafruit RGB Matrix HAT
+- (Optional) Rotary encoder with push button (for switching stops)
 
 ## Repository Files
 - `fetch_departures.py` – Fetch & format departures
@@ -151,3 +152,36 @@ Avoid very short refresh intervals (<15s). Default 30s balances timeliness and A
 
 ---
 Enjoy your live tram/train departure board!
+
+## Rotary Encoder (Optional Stop Switching)
+
+You can connect a standard KY-040 style rotary encoder to switch between two Basel stops:
+
+Stops cycled: `Basel, Aeschenplatz` <-> `Basel, Denkmal`
+
+Wiring (BCM GPIO numbers):
+
+| Encoder Pin | Pi Header Pin | BCM GPIO | Notes |
+|-------------|---------------|----------|-------|
+| CLK         | 19            | 10 (MOSI)| Use internal pull-up |
+| DT          | 21            | 9  (MISO)| Use internal pull-up |
+| SW (button) | 22            | 25       | Optional (reserved) |
+| + (VCC)     | 17            | 3V3      | IMPORTANT: use 3.3V only |
+| GND         | 20            | GND      | Ground |
+
+No extra configuration needed: when the encoder is detected the board will print a message on stderr and rotating will immediately change the displayed stop (next refresh cycle). If you start with a different `--stop`, it is added to the rotation list.
+
+If `RPi.GPIO` is not installed (e.g. developing off Pi) the encoder module silently does nothing.
+
+To install GPIO library inside your venv (if not already present through system packages):
+
+```bash
+source .venv/bin/activate
+pip install RPi.GPIO
+```
+
+Test encoder quickly (optional):
+```bash
+python -c "from rotary_encoder import RotaryEncoder; import time; e=RotaryEncoder(on_rotate=lambda d: print('delta',d)); e.start(); print('Rotate now (Ctrl+C to exit)');\n\n\n
+try:\n  while True: time.sleep(1)\nexcept KeyboardInterrupt: e.stop()"
+```
