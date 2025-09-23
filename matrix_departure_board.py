@@ -30,6 +30,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import fetch_departures as fd
+import threading
 try:
     from rotary_encoder import RotaryEncoder  # type: ignore
     _HAVE_ENCODER = True
@@ -425,6 +426,8 @@ def run_loop(opts: argparse.Namespace):
 
     # Rotary encoder integration ---------------------------------------------
     # If encoder present, allow cycling through predefined stops with rotation.
+    # Introduce a short delay before initializing encoder to avoid rare timing issues with
+    # other subsystems accessing /dev/mem very early.
     stop_choices = [
         "Basel, Aeschenplatz",
         "Basel, Denkmal",
@@ -448,13 +451,20 @@ def run_loop(opts: argparse.Namespace):
 
     encoder = None
     if _HAVE_ENCODER and RotaryEncoder is not None:
-        try:
-            encoder = RotaryEncoder(on_rotate=_on_rotate)
-            encoder.start()
-            print("Rotary encoder active: rotate to change stop", file=sys.stderr)
-        except Exception as e:  # noqa: BLE001
-            print(f"Failed to init rotary encoder: {e}", file=sys.stderr)
-            encoder = None
+        def _start_encoder():
+            nonlocal encoder
+            time.sleep(0.25)  # small stabilization delay
+            try:
+                encoder = RotaryEncoder(on_rotate=_on_rotate)  # type: ignore[operator]
+                encoder.start()
+                print("Rotary encoder active (events or polling): rotate to change stop", file=sys.stderr)
+            except RuntimeError as e:  # attempt fallback by forcing polling via direct import logic
+                print(f"Rotary encoder event init failed ({e}); continuing without encoder.", file=sys.stderr)
+                encoder = None
+            except Exception as e:  # noqa: BLE001
+                print(f"Failed to init rotary encoder: {e}", file=sys.stderr)
+                encoder = None
+        threading.Thread(target=_start_encoder, daemon=True).start()
 
     try:
         while running:
