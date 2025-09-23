@@ -26,7 +26,7 @@ If RPi.GPIO is not available (e.g. running on dev machine), the class becomes a 
 from __future__ import annotations
 
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, Tuple
 import threading
 import os
 import stat
@@ -58,6 +58,7 @@ class RotaryEncoder:
         button_debounce_ms: int = 120,
         force_polling: bool = False,
         debug: bool = False,
+        steps_per_detent: int = 4,
     ) -> None:
         self.pin_clk = pin_clk
         self.pin_dt = pin_dt
@@ -73,6 +74,17 @@ class RotaryEncoder:
         self._use_polling = False
         self._force_polling = force_polling
         self._debug = debug
+        # Quadrature decoding state -----------------------------------------
+        self._last_state: Optional[int] = None  # 2-bit state: (clk<<1)|dt
+        self._movement: int = 0
+        self._steps_per_detent = max(1, steps_per_detent)
+        # Transition table: (prev, new) -> incremental step (+/-1)
+        # Valid CW sequence: 00->01->11->10->00  (each +1) => net +4
+        # Valid CCW sequence: 00->10->11->01->00 (each -1) => net -4
+        self._TRANSITIONS: Dict[Tuple[int,int], int] = {
+            (0,1): +1, (1,3): +1, (3,2): +1, (2,0): +1,  # CW
+            (0,2): -1, (2,3): -1, (3,1): -1, (1,0): -1,  # CCW
+        }
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -86,7 +98,10 @@ class RotaryEncoder:
             GPIO.setup(self.pin_clk, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
-            self._last_clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
+            clk0 = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
+            dt0 = GPIO.input(self.pin_dt)  # type: ignore[attr-defined]
+            self._last_clk_state = clk0
+            self._last_state = (clk0 << 1) | dt0
             if self._debug:
                 uid = getattr(os, 'getuid', lambda: 'n/a')()
                 gid = getattr(os, 'getgid', lambda: 'n/a')()
@@ -116,18 +131,27 @@ class RotaryEncoder:
                     while self._running:
                         try:
                             clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-                            if clk_state != self._last_clk_state:
-                                dt_state = GPIO.input(self.pin_dt)  # type: ignore[attr-defined]
-                                if dt_state != clk_state:
-                                    delta = 1
+                            dt_state = GPIO.input(self.pin_dt)    # type: ignore[attr-defined]
+                            state = (clk_state << 1) | dt_state
+                            if self._last_state is None:
+                                self._last_state = state
+                            elif state != self._last_state:
+                                step = self._TRANSITIONS.get((self._last_state, state))
+                                if step is not None:
+                                    self._movement += step
+                                    self._last_state = state
+                                    if abs(self._movement) >= self._steps_per_detent:
+                                        delta = 1 if self._movement > 0 else -1
+                                        self._movement = 0
+                                        if self.on_rotate:
+                                            try:
+                                                self.on_rotate(delta)
+                                            except Exception:  # noqa: BLE001
+                                                pass
                                 else:
-                                    delta = -1
-                                self._last_clk_state = clk_state
-                                if self.on_rotate:
-                                    try:
-                                        self.on_rotate(delta)
-                                    except Exception:  # noqa: BLE001
-                                        pass
+                                    # Invalid transition (bounce/noise) -> reset accumulator but keep new state
+                                    self._movement = 0
+                                    self._last_state = state
                             # Simple button poll (active low)
                             if self.on_button:
                                 if GPIO.input(self.pin_sw) == 0:  # type: ignore[attr-defined]
@@ -178,17 +202,26 @@ class RotaryEncoder:
             return
         try:
             clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-            dt_state = GPIO.input(self.pin_dt)  # type: ignore[attr-defined]
+            dt_state = GPIO.input(self.pin_dt)    # type: ignore[attr-defined]
+            state = (clk_state << 1) | dt_state
         except Exception:  # noqa: BLE001
             return
-        # Determine direction: typical encoder logic -> if CLK changed, compare DT
-        if clk_state != self._last_clk_state:
-            # If DT != CLK -> clockwise else counter-clockwise (may need swap; test physically)
-            if dt_state != clk_state:
-                delta = 1
-            else:
-                delta = -1
-            self._last_clk_state = clk_state
+        if self._last_state is None:
+            self._last_state = state
+            return
+        if state == self._last_state:
+            return
+        step = self._TRANSITIONS.get((self._last_state, state))
+        if step is None:
+            # Noise: reset accumulator, accept new state
+            self._movement = 0
+            self._last_state = state
+            return
+        self._movement += step
+        self._last_state = state
+        if abs(self._movement) >= self._steps_per_detent:
+            delta = 1 if self._movement > 0 else -1
+            self._movement = 0
             try:
                 self.on_rotate(delta)
             except Exception:  # noqa: BLE001

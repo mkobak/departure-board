@@ -445,6 +445,8 @@ def run_loop(opts: argparse.Namespace):
                 pin_sw=opts.enc_sw,
                 on_rotate=_on_rotate,
                 force_polling=opts.enc_poll,
+                debug=opts.encoder_debug,
+                steps_per_detent=4,
             )
             encoder.start()
             encoder_started_early = True
@@ -509,6 +511,8 @@ def run_loop(opts: argparse.Namespace):
                     pin_sw=opts.enc_sw,
                     on_rotate=_on_rotate,  # type: ignore[operator]
                     force_polling=opts.enc_poll,
+                    debug=opts.encoder_debug,
+                    steps_per_detent=4,
                 )
                 encoder.start()
                 print("Rotary encoder active (events or polling)", file=sys.stderr)
