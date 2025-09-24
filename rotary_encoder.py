@@ -117,6 +117,11 @@ class RotaryEncoder:
                             print(f"[RotaryEncoder] Access RW DENIED for {dev}")
                     except FileNotFoundError:
                         print(f"[RotaryEncoder] {dev} missing")
+            if self._debug:
+                try:
+                    print(f"[RotaryEncoder] Initial CLK={clk0} DT={dt0} SW={GPIO.input(self.pin_sw)}")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             if not self._force_polling:
                 try:
                     # Primary strategy: hardware event detection
@@ -145,6 +150,8 @@ class RotaryEncoder:
                                         self._movement = 0
                                         if self.on_rotate:
                                             try:
+                                                if self._debug:
+                                                    print(f"[RotaryEncoder] detent {delta}")
                                                 self.on_rotate(delta)
                                             except Exception:  # noqa: BLE001
                                                 pass
@@ -223,6 +230,8 @@ class RotaryEncoder:
             delta = 1 if self._movement > 0 else -1
             self._movement = 0
             try:
+                if self._debug:
+                    print(f"[RotaryEncoder] detent {delta}")
                 self.on_rotate(delta)
             except Exception:  # noqa: BLE001
                 pass

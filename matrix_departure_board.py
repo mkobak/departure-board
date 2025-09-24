@@ -428,6 +428,8 @@ def run_loop(opts: argparse.Namespace):
             return  # debounce / noise filter
         last_rotation_accept = now
         direction = 1 if raw_delta > 0 else -1
+        if getattr(opts, 'encoder_debug', False):
+            print(f"[encoder] detent delta={direction} at {now:.3f}", file=sys.stderr)
         _accept_rotation(direction)
 
     # Early encoder init (before RGBMatrix) if requested
@@ -501,10 +503,11 @@ def run_loop(opts: argparse.Namespace):
                 print("[encoder] Delayed post-matrix init start", file=sys.stderr)
             time.sleep(0.25 if opts.encoder_delay is None else opts.encoder_delay)
             try:
-                conflict_pins = {18,19,21,22,23,24}
+                # Many pins are used by the RGB matrix HAT. Avoid common conflicts.
+                conflict_pins = {4,5,6,12,13,16,18,19,20,21,22,23,24,25,26,27}
                 user_pins = {opts.enc_clk, opts.enc_dt, opts.enc_sw}
                 if conflict_pins & user_pins:
-                    print(f"[encoder] Warning: chosen pins {user_pins & conflict_pins} may be used by the RGB matrix HAT and could cause failures.", file=sys.stderr)
+                    print(f"[encoder] Warning: chosen pins {user_pins & conflict_pins} likely conflict with the RGB matrix HAT. Try different GPIOs (e.g., 7, 14, 15) and reboot.", file=sys.stderr)
                 encoder = RotaryEncoder(
                     pin_clk=opts.enc_clk,
                     pin_dt=opts.enc_dt,
