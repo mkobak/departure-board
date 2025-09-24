@@ -133,6 +133,7 @@ class RotaryEncoder:
             if self._force_polling:
                 self._use_polling = True
                 def _poll():  # inner thread function
+                    last_dbg = 0.0
                     while self._running:
                         try:
                             clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
@@ -159,6 +160,16 @@ class RotaryEncoder:
                                     # Invalid transition (bounce/noise) -> reset accumulator but keep new state
                                     self._movement = 0
                                     self._last_state = state
+                            # periodic debug of raw pin states
+                            if self._debug:
+                                now = time.time()
+                                if now - last_dbg >= 0.2:
+                                    try:
+                                        sw_state = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
+                                        print(f"[RotaryEncoder] CLK={clk_state} DT={dt_state} SW={sw_state}")
+                                    except Exception:
+                                        pass
+                                    last_dbg = now
                             # Simple button poll (active low)
                             if self.on_button:
                                 if GPIO.input(self.pin_sw) == 0:  # type: ignore[attr-defined]
