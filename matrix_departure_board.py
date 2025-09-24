@@ -629,9 +629,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Override pwm dither bits (0 to disable, higher = smoother dims)')
     # Rotary encoder options
     p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
-    p.add_argument('--enc-clk', type=int, default=5, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
-    p.add_argument('--enc-dt', type=int, default=6, help='Rotary encoder DT (B) GPIO (BCM numbering)')
-    p.add_argument('--enc-sw', type=int, default=26, help='Rotary encoder switch GPIO (BCM numbering)')
+    p.add_argument('--enc-clk', type=int, default=7, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
+    p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering, optional)')
+    p.add_argument('--enc-sw', type=int, default=11, help='Rotary encoder switch GPIO (BCM numbering)')
     p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
     p.add_argument('--encoder-early', action='store_true', help='Initialize rotary encoder before RGBMatrix (try if normal init fails)')
     p.add_argument('--encoder-delay', type=float, default=0.0, help='Delay seconds before encoder init (early or delayed)')
@@ -640,8 +640,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Delay seconds after rotation before fetching new departures (immediate header update)')
     p.add_argument('--rotate-min-interval', type=float, default=0.08,
                    help='Minimum seconds between accepted detents (debounce at app level)')
-    p.add_argument('--enc-steps-per-detent', type=int, default=2,
-                   help='Quadrature steps that amount to one detent for your encoder (1,2,4 typical)')
+    p.add_argument('--enc-steps-per-detent', type=int, default=1,
+                   help='Steps per detent: 1 for directionless (CLK only), 2/4 if using full quadrature')
     return p.parse_args(argv)
 
 

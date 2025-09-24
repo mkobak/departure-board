@@ -155,33 +155,65 @@ Enjoy your live tram/train departure board!
 
 ## Rotary Encoder (Optional Stop Switching)
 
-You can connect a standard KY-040 style rotary encoder to switch between two Basel stops:
+A rotary encoder can cycle among predefined stops (default list includes `Basel, Aeschenplatz` and `Basel, Denkmal`). When you supply a different `--stop`, it is inserted into the list. Each detent advances to the next stop; direction is ignored by default (directionless mode) so you only need a single phase pin.
 
-Stops cycled: `Basel, Aeschenplatz` <-> `Basel, Denkmal`
+### Default GPIOs (BCM numbering)
 
-Wiring (BCM GPIO numbers):
+| Function | GPIO | Header Pin | Notes |
+|----------|------|------------|-------|
+| CLK (A)  | 7    | 26         | Directionless counting (rising edge) |
+| DT (B)   | 9    | 21         | Optional; only used if directional mode later enabled |
+| SW (btn) | 11   | 23         | Currently also emits pulses if miswired; short press reserved for future | 
+| VCC      | 3V3  | 1 / 17     | Use 3.3V only |
+| GND      | GND  | any GND    | Common ground |
 
-| Encoder Pin | Pi Header Pin | BCM GPIO | Notes |
-|-------------|---------------|----------|-------|
-| CLK         | 19            | 10 (MOSI)| Use internal pull-up |
-| DT          | 21            | 9  (MISO)| Use internal pull-up |
-| SW (button) | 22            | 25       | Optional (reserved) |
-| + (VCC)     | 17            | 3V3      | IMPORTANT: use 3.3V only |
-| GND         | 20            | GND      | Ground |
+If you only wire CLK and SW (no DT), rotation still works because directionless mode is the default. Every valid detent = +1.
 
-No extra configuration needed: when the encoder is detected the board will print a message on stderr and rotating will immediately change the displayed stop (next refresh cycle). If you start with a different `--stop`, it is added to the rotation list.
-
-If `RPi.GPIO` is not installed (e.g. developing off Pi) the encoder module silently does nothing.
-
-To install GPIO library inside your venv (if not already present through system packages):
-
+### Changing pins
+Use CLI flags `--enc-clk`, `--enc-dt`, `--enc-sw`. Example:
 ```bash
-source .venv/bin/activate
-pip install RPi.GPIO
+sudo .venv/bin/python matrix_departure_board.py --stop "Basel, Aeschenplatz" --enc-clk 7 --enc-dt 9 --enc-sw 11
 ```
 
-Test encoder quickly (optional):
+### Polling vs interrupts
+Pass `--enc-poll` if interrupts fail or you need deterministic polling (the service file uses polling by default for reliability with some HAT conflicts).
+
+### Steps per detent
+`--enc-steps-per-detent 1` is correct for directionless mode (one rising edge per detent). If you enable directional quadrature later (set `directionless=False` in code or expose a flag), you might use 2 or 4 depending on encoder resolution.
+
+### Quick test script
 ```bash
-python -c "from rotary_encoder import RotaryEncoder; import time; e=RotaryEncoder(on_rotate=lambda d: print('delta',d)); e.start(); print('Rotate now (Ctrl+C to exit)');\n\n\n
-try:\n  while True: time.sleep(1)\nexcept KeyboardInterrupt: e.stop()"
+python - <<'PY'
+from rotary_encoder import RotaryEncoder
+import time
+e = RotaryEncoder(on_rotate=lambda d: print('delta', d), pin_clk=7, pin_dt=9, pin_sw=11)
+e.start()
+print('Rotate now (Ctrl+C to exit)')
+try:
+		while True:
+				time.sleep(1)
+except KeyboardInterrupt:
+		e.stop()
+PY
+```
+
+If `RPi.GPIO` is missing (e.g., running on a PC), the encoder class no-ops.
+
+### Auto-start with systemd
+The provided `departure-board.service` now includes the encoder defaults and early initialization for reliability:
+```
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py \
+	--stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat \
+	--encoder-early --encoder-delay 0.05 --enc-clk 7 --enc-dt 9 --enc-sw 11 \
+	--enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5
+```
+Enable at boot (after copying service file to `/etc/systemd/system/`):
+```bash
+sudo cp departure-board.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now departure-board.service
+```
+View logs:
+```bash
+journalctl -u departure-board.service -f
 ```

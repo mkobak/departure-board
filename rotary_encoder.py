@@ -50,9 +50,9 @@ except Exception:  # noqa: BLE001
 class RotaryEncoder:
     def __init__(
         self,
-        pin_clk: int = 10,
-        pin_dt: Optional[int] = 9,  # Keep default for compatibility; can set to None if not wired
-        pin_sw: int = 7,  # Default to GPIO7 per user's wiring (BOARD pin 26)
+        pin_clk: int = 7,   # Updated project default (working setup)
+        pin_dt: Optional[int] = 9,  # Optional; keeps direction data if wired
+        pin_sw: int = 11,  # Updated project default push button
         on_rotate: Optional[Callable[[int], None]] = None,
         on_button: Optional[Callable[[], None]] = None,
         debounce_ms: int = 4,
