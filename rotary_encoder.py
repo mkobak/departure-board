@@ -2,16 +2,17 @@
 """Simple rotary encoder interface for Raspberry Pi.
 
 Hardware (pins per user wiring):
-  CLK (A phase)  -> GPIO10 (BOARD pin 19)
-  DT  (B phase)  -> GPIO9  (BOARD pin 21)
-  SW  (switch)   -> GPIO25 (BOARD pin 22)
+    CLK (A phase)  -> GPIO10 (BOARD pin 19)
+    DT  (B phase)  -> (optional) GPIO9 (BOARD pin 21)
+    SW  (switch)   -> GPIO7  (BOARD pin 26)
   VCC -> 3V3 (pin 17)  IMPORTANT: use 3.3V, not 5V
   GND -> any ground (pin 20)
 
 Design goals:
 - Lightweight, no external deps besides RPi.GPIO (preferred minimal install) or fallback to gpiozero.
 - Debounced edge detection using bouncetime in event detection (coarse, but fine for menu toggle).
-- Provide callback on rotation direction: +1 for clockwise, -1 for counter-clockwise (subject to mechanical definition; swap if reversed).
+- Directionless mode supported (default): use only CLK and SW. Each detent on CLK triggers on_rotate(+1), regardless of direction.
+- Directional mode (optional): if DT is wired and directionless=False, +1 for clockwise, -1 for counter-clockwise using DT sampled at CLK rising edge.
 - Provide callback on button press (short press) – currently optional (not used yet by main script but available for future features).
 
 Usage:
@@ -50,15 +51,16 @@ class RotaryEncoder:
     def __init__(
         self,
         pin_clk: int = 10,
-        pin_dt: int = 9,
-        pin_sw: int = 25,
+        pin_dt: Optional[int] = 9,  # Keep default for compatibility; can set to None if not wired
+        pin_sw: int = 7,  # Default to GPIO7 per user's wiring (BOARD pin 26)
         on_rotate: Optional[Callable[[int], None]] = None,
         on_button: Optional[Callable[[], None]] = None,
         debounce_ms: int = 4,
         button_debounce_ms: int = 120,
         force_polling: bool = False,
         debug: bool = False,
-        steps_per_detent: int = 4,
+        steps_per_detent: Optional[int] = None,  # If None, auto: 1 when directionless, else 4
+        directionless: bool = True,  # Default to directionless so CLK-only works out-of-the-box
     ) -> None:
         self.pin_clk = pin_clk
         self.pin_dt = pin_dt
@@ -74,10 +76,19 @@ class RotaryEncoder:
         self._use_polling = False
         self._force_polling = force_polling
         self._debug = debug
-        # Quadrature decoding state -----------------------------------------
-        self._last_state: Optional[int] = None  # 2-bit state: (clk<<1)|dt
+        # Mode
+        self._directionless = bool(directionless or self.pin_dt is None)
+
+        # Movement accumulation (for detent filtering)
+        if steps_per_detent is None:
+            # In directionless mode, we typically get one useful rising edge per detent.
+            self._steps_per_detent = 1 if self._directionless else 4
+        else:
+            self._steps_per_detent = max(1, steps_per_detent)
         self._movement: int = 0
-        self._steps_per_detent = max(1, steps_per_detent)
+
+        # Quadrature decoding state (kept for potential future full-table usage)
+        self._last_state: Optional[int] = None  # 2-bit state: (clk<<1)|dt
         # Transition table: (prev, new) -> incremental step (+/-1)
         # Valid CW sequence: 00->01->11->10->00  (each +1) => net +4
         # Valid CCW sequence: 00->10->11->01->00 (each -1) => net -4
@@ -85,6 +96,9 @@ class RotaryEncoder:
             (0,1): +1, (1,3): +1, (3,2): +1, (2,0): +1,  # CW
             (0,2): -1, (2,3): -1, (3,1): -1, (1,0): -1,  # CCW
         }
+        # Edge-based decoding state (prefer rising edge of CLK only)
+        self._last_clk_level: Optional[int] = None
+        self._last_clk_edge_time: float = 0.0
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -96,12 +110,14 @@ class RotaryEncoder:
         try:
             GPIO.setmode(GPIO.BCM)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_clk, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
-            GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
+            if not self._directionless and self.pin_dt is not None:
+                GPIO.setup(self.pin_dt, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             GPIO.setup(self.pin_sw, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # type: ignore[attr-defined]
             clk0 = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-            dt0 = GPIO.input(self.pin_dt)  # type: ignore[attr-defined]
+            dt0 = GPIO.input(self.pin_dt) if (not self._directionless and self.pin_dt is not None) else 1  # type: ignore[attr-defined]
             self._last_clk_state = clk0
-            self._last_state = (clk0 << 1) | dt0
+            self._last_state = (clk0 << 1) | (dt0 & 1)
+            self._last_clk_level = clk0
             if self._debug:
                 uid = getattr(os, 'getuid', lambda: 'n/a')()
                 gid = getattr(os, 'getgid', lambda: 'n/a')()
@@ -119,13 +135,14 @@ class RotaryEncoder:
                         print(f"[RotaryEncoder] {dev} missing")
             if self._debug:
                 try:
-                    print(f"[RotaryEncoder] Initial CLK={clk0} DT={dt0} SW={GPIO.input(self.pin_sw)}")  # type: ignore[attr-defined]
+                    sw0 = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
+                    print(f"[RotaryEncoder] Initial CLK={clk0} DT={'n/a' if self._directionless else dt0} SW={sw0}")
                 except Exception:
                     pass
             if not self._force_polling:
                 try:
-                    # Primary strategy: hardware event detection
-                    GPIO.add_event_detect(self.pin_clk, GPIO.BOTH, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
+                    # Primary strategy: hardware event detection on CLK rising edge only
+                    GPIO.add_event_detect(self.pin_clk, GPIO.RISING, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
                     GPIO.add_event_detect(self.pin_sw, GPIO.FALLING, callback=self._button_callback, bouncetime=self.button_debounce_ms)  # type: ignore[attr-defined]
                 except RuntimeError:
                     # Fallback to polling if event detection not possible
@@ -137,15 +154,24 @@ class RotaryEncoder:
                     while self._running:
                         try:
                             clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-                            dt_state = GPIO.input(self.pin_dt)    # type: ignore[attr-defined]
-                            state = (clk_state << 1) | dt_state
-                            if self._last_state is None:
-                                self._last_state = state
-                            elif state != self._last_state:
-                                step = self._TRANSITIONS.get((self._last_state, state))
-                                if step is not None:
+                            # Rising-edge-of-CLK decoding to suppress single-line noise
+                            if self._last_clk_level is None:
+                                self._last_clk_level = clk_state
+                            if clk_state != self._last_clk_level:
+                                # Edge detected
+                                now_t = time.time()
+                                rising = (self._last_clk_level == 0 and clk_state == 1)
+                                self._last_clk_level = clk_state
+                                # Only act on rising edges with simple debounce
+                                if rising and (now_t - self._last_clk_edge_time) >= (self.debounce_ms / 1000.0):
+                                    self._last_clk_edge_time = now_t
+                                    # Directionless: every detent counts as +1; directional uses DT sample
+                                    if self._directionless:
+                                        step = +1
+                                    else:
+                                        dt_state = GPIO.input(self.pin_dt) if self.pin_dt is not None else 1  # type: ignore[attr-defined]
+                                        step = +1 if dt_state == 0 else -1
                                     self._movement += step
-                                    self._last_state = state
                                     if abs(self._movement) >= self._steps_per_detent:
                                         delta = 1 if self._movement > 0 else -1
                                         self._movement = 0
@@ -156,17 +182,17 @@ class RotaryEncoder:
                                                 self.on_rotate(delta)
                                             except Exception:  # noqa: BLE001
                                                 pass
-                                else:
-                                    # Invalid transition (bounce/noise) -> reset accumulator but keep new state
-                                    self._movement = 0
-                                    self._last_state = state
                             # periodic debug of raw pin states
                             if self._debug:
                                 now = time.time()
                                 if now - last_dbg >= 0.2:
                                     try:
                                         sw_state = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
-                                        print(f"[RotaryEncoder] CLK={clk_state} DT={dt_state} SW={sw_state}")
+                                        if self._directionless:
+                                            print(f"[RotaryEncoder] CLK={clk_state} SW={sw_state}")
+                                        else:
+                                            dt_dbg = GPIO.input(self.pin_dt) if self.pin_dt is not None else 'n/a'  # type: ignore[attr-defined]
+                                            print(f"[RotaryEncoder] CLK={clk_state} DT={dt_dbg} SW={sw_state}")
                                     except Exception:
                                         pass
                                     last_dbg = now
@@ -206,7 +232,14 @@ class RotaryEncoder:
                 GPIO.remove_event_detect(self.pin_sw)  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
-        GPIO.cleanup([self.pin_clk, self.pin_dt, self.pin_sw])  # type: ignore[attr-defined]
+        # Cleanup only configured pins
+        pins = [self.pin_clk, self.pin_sw]
+        if not self._directionless and self.pin_dt is not None:
+            pins.append(self.pin_dt)
+        try:
+            GPIO.cleanup(pins)  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self._running = False
         if self._poll_thread and self._poll_thread.is_alive():
             # Thread will exit naturally on next loop since _running False.
@@ -218,25 +251,20 @@ class RotaryEncoder:
             return
         if self.on_rotate is None:
             return
+        # Edge-based: called on CLK rising due to event detector setup
+        now = time.time()
+        if (now - self._last_clk_edge_time) < (self.debounce_ms / 1000.0):
+            return
+        self._last_clk_edge_time = now
         try:
-            clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
-            dt_state = GPIO.input(self.pin_dt)    # type: ignore[attr-defined]
-            state = (clk_state << 1) | dt_state
+            if self._directionless:
+                step = +1
+            else:
+                dt_state = GPIO.input(self.pin_dt) if self.pin_dt is not None else 1  # type: ignore[attr-defined]
+                step = +1 if dt_state == 0 else -1
         except Exception:  # noqa: BLE001
             return
-        if self._last_state is None:
-            self._last_state = state
-            return
-        if state == self._last_state:
-            return
-        step = self._TRANSITIONS.get((self._last_state, state))
-        if step is None:
-            # Noise: reset accumulator, accept new state
-            self._movement = 0
-            self._last_state = state
-            return
         self._movement += step
-        self._last_state = state
         if abs(self._movement) >= self._steps_per_detent:
             delta = 1 if self._movement > 0 else -1
             self._movement = 0

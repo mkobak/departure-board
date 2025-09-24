@@ -508,6 +508,10 @@ def run_loop(opts: argparse.Namespace):
                 user_pins = {opts.enc_clk, opts.enc_dt, opts.enc_sw}
                 if conflict_pins & user_pins:
                     print(f"[encoder] Warning: chosen pins {user_pins & conflict_pins} likely conflict with the RGB matrix HAT. Try different GPIOs (e.g., 7, 14, 15) and reboot.", file=sys.stderr)
+                # Warn about UART pins – GPIO14/15 are TXD/RXD and may toggle due to serial console
+                uart_pins = {14, 15}
+                if uart_pins & user_pins:
+                    print("[encoder] Warning: using UART pins (GPIO14/15). They can show activity/noise unless serial console/UART is disabled. Prefer other GPIOs for CLK/DT or disable serial.", file=sys.stderr)
                 encoder = RotaryEncoder(
                     pin_clk=opts.enc_clk,
                     pin_dt=opts.enc_dt,
