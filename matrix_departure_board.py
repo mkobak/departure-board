@@ -403,7 +403,7 @@ def run_loop(opts: argparse.Namespace):
     encoder = None
     encoder_started_early = False
     last_rotation_accept = 0.0                     # debounce accepted rotation time
-    rotation_min_interval = 0.08                   # seconds between accepted detents
+    rotation_min_interval = float(getattr(opts, 'rotate_min_interval', 0.08))
 
     rotation_queue: List[int] = []                 # accumulate raw deltas (optional future use)
 
@@ -446,7 +446,7 @@ def run_loop(opts: argparse.Namespace):
                 on_rotate=_on_rotate,
                 force_polling=opts.enc_poll,
                 debug=opts.encoder_debug,
-                steps_per_detent=4,
+                steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
             )
             encoder.start()
             encoder_started_early = True
@@ -512,7 +512,7 @@ def run_loop(opts: argparse.Namespace):
                     on_rotate=_on_rotate,  # type: ignore[operator]
                     force_polling=opts.enc_poll,
                     debug=opts.encoder_debug,
-                    steps_per_detent=4,
+                    steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
                 )
                 encoder.start()
                 print("Rotary encoder active (events or polling)", file=sys.stderr)
@@ -631,6 +631,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--encoder-debug', action='store_true', help='Verbose encoder debug messages')
     p.add_argument('--rotate-fetch-delay', type=float, default=0.5,
                    help='Delay seconds after rotation before fetching new departures (immediate header update)')
+    p.add_argument('--rotate-min-interval', type=float, default=0.08,
+                   help='Minimum seconds between accepted detents (debounce at app level)')
+    p.add_argument('--enc-steps-per-detent', type=int, default=2,
+                   help='Quadrature steps that amount to one detent for your encoder (1,2,4 typical)')
     return p.parse_args(argv)
 
 
