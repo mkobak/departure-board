@@ -27,6 +27,7 @@ import signal
 import sys
 import time
 from datetime import datetime
+import subprocess
 from typing import List, Dict, Any, Optional, Callable
 
 import fetch_departures as fd
@@ -237,7 +238,7 @@ class Renderer:
 
 # Matrix specific drawing -----------------------------------------------------
 
-def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str):  # type: ignore[name-defined]
+def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str, now_text: Optional[str] = None):  # type: ignore[name-defined]
     """Draw a complete frame.
 
     off: off-screen canvas (re-used each frame)
@@ -285,7 +286,7 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
         return cur - x
 
     # Header: time right, stop name left truncated, 1px padding on each side.
-    now_txt = datetime.now().strftime('%H:%M')
+    now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
     inner_left = BOARD_MARGIN
     inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside header margin
     inner_width = r.cols - 2 * BOARD_MARGIN
@@ -540,6 +541,35 @@ def run_loop(opts: argparse.Namespace):
         rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
         return rows[:opts.limit]
 
+    # Detect whether system time is synchronized to avoid showing stale clock at boot
+    _sync_cached: Optional[bool] = None
+    _sync_ts: float = 0.0
+    def time_is_synchronized() -> bool:
+        nonlocal _sync_cached, _sync_ts
+        now = time.time()
+        if _sync_cached is not None and (now - _sync_ts) < 1.0:
+            return _sync_cached
+        result = False
+        try:
+            out = subprocess.check_output(
+                ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1.0,
+            ).strip().lower()
+            if out in {"yes", "true", "1"}:
+                result = True
+        except Exception:
+            # Fallback heuristic: consider time sane if year is reasonably current
+            try:
+                if datetime.now().year >= 2024:
+                    result = True
+            except Exception:
+                result = False
+        _sync_cached = result
+        _sync_ts = now
+        return result
+
     # Compute next :00 or :30 boundary timestamp (epoch seconds)
     def next_half_minute_boundary(ts: float) -> float:
         dt = datetime.fromtimestamp(ts)
@@ -560,10 +590,14 @@ def run_loop(opts: argparse.Namespace):
     # --- Initial fetch scheduling --------------------------------------------------
     schedule_fetch(0.0)  # fetch immediately on start
     next_periodic_refresh = time.time() + fetch_interval
+    fetch_backoff = 5.0  # quick retry when fetch fails at boot; increases up to 60s
+    last_time_sync_state = time_is_synchronized()
 
     # Single off-screen canvas reused (fix for CreateFrameCanvas spam)
     offscreen = matrix.CreateFrameCanvas()
-    offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop)  # blank first frame
+    # On very early boot, system time might be wrong until NTP sync; show placeholder clock
+    initial_now = "--:--" if not time_is_synchronized() else None
+    offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop, now_text=initial_now)  # blank first frame, clears stale panel content
 
     running = True
     def _sig_handler(signum, frame):  # noqa: D401, ANN001
@@ -577,20 +611,38 @@ def run_loop(opts: argparse.Namespace):
             now = time.time()
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
+                # If system time isn't synced yet, don't fetch (mins would be wrong); retry soon
+                if not time_is_synchronized():
+                    schedule_fetch(min(5.0, fetch_backoff))
+                    last_time_sync_state = False
+                    # draw loop continues with placeholder clock
+                    next_scheduled_fetch = 0.0
+                    continue
                 try:
                     departures = fetch_rows(header_stop)
                     last_fetch_time = now
+                    fetch_backoff = 5.0  # reset backoff on success
                 except Exception as e:  # noqa: BLE001
                     print(f"[fetch] Error fetching departures for '{header_stop}': {e}", file=sys.stderr)
+                    # Schedule a quick retry without waiting for full interval
+                    schedule_fetch(fetch_backoff)
+                    fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
                 finally:
                     next_scheduled_fetch = 0.0
-                    next_periodic_refresh = now + fetch_interval
+                    # Only set periodic refresh after a successful fetch; otherwise keep quick retries
+                    if departures:
+                        next_periodic_refresh = now + fetch_interval
             # Periodic refresh if stale (even without rotation)
             if departures and now >= next_periodic_refresh:
                 schedule_fetch(0.0)
                 next_periodic_refresh = now + fetch_interval
             # Redraw every loop (lightweight) – header may change instantly on rotation
-            offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop)
+            # If time isn't synchronized yet, render placeholder clock to avoid showing stale time
+            now_txt_override = None if time_is_synchronized() else "--:--"
+            offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop, now_text=now_txt_override)
+            # If time just became synchronized and we have no departures yet, force a fetch asap
+            if now_txt_override is None and not departures and not next_scheduled_fetch:
+                schedule_fetch(0.0)
             # Compute dynamic sleep (shorter while we're waiting for a scheduled fetch soon)
             sleep_target = 0.1
             if next_scheduled_fetch:

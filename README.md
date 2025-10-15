@@ -42,7 +42,7 @@ make build-python PYTHON=/home/mk/departure-board/.venv/bin/python
 cd bindings/python
 /home/mk/departure-board/.venv/bin/python setup.py install
 
-# Test run (GPIO may require sudo; try without first)
+# Test run
 cd /home/mk/departure-board
 sudo /home/mk/departure-board/.venv/bin/python matrix_departure_board.py \
 	--stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat
@@ -144,14 +144,6 @@ rm -rf /home/mk/departure-board /home/mk/rpi-rgb-led-matrix
 ## API Courtesy
 Avoid very short refresh intervals (<15s). Default 30s balances timeliness and API load.
 
-## Next Ideas
-- Scroll destinations instead of truncating
-- Show delay / real-time difference
-- Page through more departures
-- Caching + offline fallback
-
----
-Enjoy your live tram/train departure board!
 
 ## Rotary Encoder (Optional Stop Switching)
 

@@ -1,6 +1,7 @@
 [Unit]
 Description=LED Matrix Departure Board
-After=network-online.target
+# Start early to clear any stale frame from previous boot; don't wait for full network
+After=network-pre.target
 Wants=network-online.target
 
 [Service]
@@ -14,6 +15,7 @@ ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/mat
 Restart=on-failure
 RestartSec=5
 Nice=5
+Environment=TZ=Europe/Zurich
 
 # If GPIO access fails (permission), either:
 #   1) Run as root (comment User/Group) OR
