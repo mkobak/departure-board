@@ -522,13 +522,28 @@ def run_loop(opts: argparse.Namespace):
         options.pwm_dither_bits = opts.dither_bits
     else:
         options.pwm_dither_bits = 1
+    # Only set explicit refresh limit if the user asked; letting the library pick often yields less flicker
     if opts.limit_refresh_hz is not None:
         options.limit_refresh_rate_hz = opts.limit_refresh_hz
-    else:
-        options.limit_refresh_rate_hz = 120
+    # Optional: PWM bit depth (lower can reduce LSB flicker at very low brightness)
+    if getattr(opts, 'pwm_bits', None) is not None:
+        options.pwm_bits = int(opts.pwm_bits)
     if opts.slowdown_gpio is not None:
         options.gpio_slowdown = opts.slowdown_gpio
-    options.multiplexing = 0
+    # Only set multiplexing/scan parameters if provided; defaults vary by panel generation
+    if getattr(opts, 'multiplexing', None) is not None:
+        options.multiplexing = int(opts.multiplexing)
+    if getattr(opts, 'scan_mode', None) is not None:
+        options.scan_mode = int(opts.scan_mode)
+    if getattr(opts, 'row_addr_type', None) is not None:
+        options.row_address_type = int(opts.row_addr_type)
+    # Panel/controller specific tweaks
+    if getattr(opts, 'panel_type', None):
+        options.panel_type = opts.panel_type
+    if getattr(opts, 'led_rgb_sequence', None):
+        options.led_rgb_sequence = opts.led_rgb_sequence
+    if getattr(opts, 'disable_hardware_pulsing', False):
+        options.disable_hardware_pulsing = True
     options.pixel_mapper_config = ""
     if opts.chain > 1:
         options.chain_length = opts.chain
@@ -742,6 +757,20 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Hard limit on refresh rate Hz (lower to reduce CPU/flicker)')
     p.add_argument('--dither-bits', type=int, default=None,
                    help='Override pwm dither bits (0 to disable, higher = smoother dims)')
+    p.add_argument('--pwm-bits', type=int, default=None,
+                   help='PWM bit depth (default panel-specific). Try 8-11 to reduce low-brightness flicker')
+    p.add_argument('--multiplexing', type=int, default=None,
+                   help='Forced multiplexing scheme (e.g., 0/8/16/32/64). Only set if you know your panel spec')
+    p.add_argument('--scan-mode', type=int, choices=[0,1], default=None,
+                   help='Scan mode: 0 = progressive, 1 = interlaced. Some panels flicker less with 1')
+    p.add_argument('--row-addr-type', type=int, choices=[0,1,2,3,4], default=None,
+                   help='Row address type (A/B/C/... lines). Matches panel controller generation')
+    p.add_argument('--panel-type', default=None,
+                   help='Panel type hint (e.g., FM6126A, ICN2038S). Enables panel-specific init sequences')
+    p.add_argument('--led-rgb-sequence', default=None,
+                   help='Override LED color sequence (e.g., RGB, RBG, GBR). Can affect ghosting/flicker')
+    p.add_argument('--disable-hardware-pulsing', action='store_true',
+                   help='Disable HAT hardware pulsing; may help on some clones at the cost of CPU')
     # Rotary encoder options
     p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
     p.add_argument('--enc-clk', type=int, default=7, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
