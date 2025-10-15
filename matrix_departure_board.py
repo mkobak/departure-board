@@ -125,6 +125,15 @@ FONT = {
     'ä': ["01010","00000","01110","00001","01111","10001","01111"],
     'ö': ["01010","00000","01110","10001","10001","10001","01110"],
     'ü': ["01010","00000","10001","10001","10001","10001","01111"],
+    '→': [
+        "00000",
+        "00100",
+        "00110",
+        "11111",
+        "00110",
+        "00100",
+        "00000",
+    ],
 }
 
 BITMAP = {ch: [[1 if c == '1' else 0 for c in row] for row in rows] for ch, rows in FONT.items()}
@@ -194,20 +203,25 @@ class Renderer:
         for r in rows[:cap]:
             cat = (r.get('category') or '').strip().upper()
             num = (r.get('number') or '').strip()
-            if cat in {'T','TRAM'} and num:
-                ident = num
-            else:
-                ident = (r.get('line') or f"{cat}{num}" or '?').strip()
-            if len(ident) <= MIN_IDENT_CHARS:
-                ident_display = ident
+            # Identifier column logic:
+            # - Trams: show numeric part only, 2-char column (right-aligned if 1 digit)
+            # - Trains/others: show category letters only (strip digits), max 3 chars, 3-char column right-aligned
+            if cat in {'T', 'TRAM'} and num:
+                ident_display = num
                 ident_col_chars = MIN_IDENT_CHARS
             else:
-                ident_display = ident
-                ident_col_chars = len(ident)
+                letters = ''.join(ch for ch in cat if ch.isalpha()).upper() or cat[:3].upper()
+                ident_display = letters[:3]
+                ident_col_chars = 3
             station_city = fd._station_city(origin)
-            dest_raw = (r.get('dest') or '').replace('\n',' ')
-            dest = fd._strip_same_city(dest_raw, station_city)
-            dest = fd.BAHNHOF_PATTERN.sub('Bhf', dest)
+            # Allow an explicit destination override (e.g., platform label)
+            dest_override = r.get('_dest_override')
+            if dest_override:
+                dest = str(dest_override)
+            else:
+                dest_raw = (r.get('dest') or '').replace('\n',' ')
+                dest = fd._strip_same_city(dest_raw, station_city)
+                dest = fd.BAHNHOF_PATTERN.sub('Bhf', dest)
             mins = int(r.get('mins') or 0)
             # width budgeting with variable advance
             ident_w = self.measure('X' * ident_col_chars)
@@ -354,12 +368,9 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
         ident_col_chars = int(row['ident_col_chars'])
         ident_w = measure('X' * ident_col_chars)
         ident = row['ident_display']
-        # Right align single char into 2-char column
-        if ident_col_chars == MIN_IDENT_CHARS and len(ident) == 1:
-            pad = measure('X' * MIN_IDENT_CHARS) - measure(ident)
-            draw_text(inner_left + pad, y, ident)
-        else:
-            draw_text(inner_left, y, ident)
+        # Right-align ident within the fixed column width
+        pad = max(0, ident_w - measure(ident))
+        draw_text(inner_left + pad, y, ident)
         dest_start_x = inner_left + ident_w + LINE_ID_DEST_GAP
         draw_text(dest_start_x, y, row['dest'])
         mins = row['mins']
@@ -415,7 +426,7 @@ def run_loop(opts: argparse.Namespace):
     # Third screen: trains Basel SBB → Zürich HB only
     screens.append({
         'origin': 'Basel SBB',
-        'header': 'Basel SBB → Zürich HB',
+        'header': 'Basel → Zürich',
         'city_ref': 'Basel SBB',
         'transportations': ['train'],
         'dest_filter': 'Zürich HB',
@@ -573,10 +584,19 @@ def run_loop(opts: argparse.Namespace):
         dest_filter = screen.get('dest_filter')
         if dest_filter:
             nf = fd._normalize(dest_filter)
-            rows = [
-                r for r in rows
-                if (r.get('category') or '').upper() not in {'T','TRAM'} and fd._normalize(r.get('dest') or '') == nf
-            ]
+            filtered: List[Dict[str, Any]] = []
+            for r in rows:
+                if (r.get('category') or '').upper() in {'T','TRAM'}:
+                    continue
+                if fd._normalize(r.get('dest') or '') != nf:
+                    continue
+                # Override destination text to show platform label if available
+                plat = (r.get('plat') or '').strip()
+                if plat:
+                    r = dict(r)
+                    r['_dest_override'] = f"Gleis {plat}"
+                filtered.append(r)
+            rows = filtered
         # Apply global CLI destination filter as an additional constraint if provided
         if getattr(opts, 'dest', ''):
             nf_cli = fd._normalize(opts.dest)
