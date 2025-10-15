@@ -241,12 +241,13 @@ class Renderer:
 
 # Matrix specific drawing -----------------------------------------------------
 
-def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], origin: str, now_text: Optional[str] = None):  # type: ignore[name-defined]
+def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, Any]], header_text: str, city_reference: str, now_text: Optional[str] = None):  # type: ignore[name-defined]
     """Draw a complete frame.
 
     off: off-screen canvas (re-used each frame)
     rows: departures (empty => blank list area)
-    origin: stop name for header
+    header_text: text to render in the header (e.g., "Basel SBB → Zürich HB")
+    city_reference: station name used for same-city destination stripping
     """
     # Clear (fill black) first – using direct pixel loops (fast enough for 128x64)
     for y in range(renderer.rows):
@@ -261,7 +262,7 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3  # 2 + 7 + 3 = 12
     DEPARTURES_START_Y = RULE_Y + 1 + 4      # 12 + 1 + 4 = 17
     cap = r.rows_capacity(DEPARTURES_START_Y)
-    prepared = r.prepare_rows(rows, origin, cap)
+    prepared = r.prepare_rows(rows, city_reference, cap)
 
     # Drawing helpers --------------------------------------------------
     def glyph_width(ch: str) -> int:
@@ -299,17 +300,19 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     # leave 1px gap before inner_right
     time_x = inner_right - time_w  # already leaves gap since inner_right not drawn on
     # Determine stop name similarly to demo logic
-    station_city = fd._station_city(origin)
-    if ',' in origin:
-        parts = [p.strip() for p in origin.split(',')]
+    station_city = fd._station_city(city_reference)
+    # Derive a display-friendly header: if it contains a comma, prefer the part after the comma
+    display_header = header_text.strip()
+    if ',' in display_header:
+        parts = [p.strip() for p in display_header.split(',')]
         if len(parts) >= 2:
             stop_name = parts[1] or parts[0]
         else:
             stop_name = parts[0]
     else:
-        stop_name = origin.strip()
+        stop_name = display_header
     if station_city and stop_name.lower() == station_city.lower():
-        alts = [p.strip() for p in origin.split(',') if p.strip().lower() != station_city.lower()]
+        alts = [p.strip() for p in header_text.split(',') if p.strip().lower() != station_city.lower()]
         if alts:
             stop_name = alts[-1]
 
@@ -394,15 +397,38 @@ def run_loop(opts: argparse.Namespace):
             print('-' * 40)
             time.sleep(opts.refresh)
         return
-    # Build stop choices (feel free to extend list here or later from config)
-    stop_choices = ["Basel, Aeschenplatz", "Basel, Denkmal"]
-    if opts.stop not in stop_choices:
-        stop_choices.insert(0, opts.stop)
+    # Build screen list (two existing tram stops + third: Basel SBB → Zürich HB, trains only)
+    def _make_stop_screen(name: str) -> Dict[str, Any]:
+        return {
+            'origin': name,
+            'header': name,
+            'city_ref': name,
+            'transportations': None if opts.all else ['tram','train'],
+            'dest_filter': None,
+        }
+    screens: List[Dict[str, Any]] = []
+    default_stops = ["Basel, Aeschenplatz", "Basel, Denkmal"]
+    if opts.stop not in default_stops:
+        screens.append(_make_stop_screen(opts.stop))
+    for s in default_stops:
+        screens.append(_make_stop_screen(s))
+    # Third screen: trains Basel SBB → Zürich HB only
+    screens.append({
+        'origin': 'Basel SBB',
+        'header': 'Basel SBB → Zürich HB',
+        'city_ref': 'Basel SBB',
+        'transportations': ['train'],
+        'dest_filter': 'Zürich HB',
+    })
 
     # --- Simplified State Machine --------------------------------------------------
-    current_index = stop_choices.index(opts.stop)  # active stop index
-    header_stop = stop_choices[current_index]      # stop shown in header
-    departures: List[Dict[str, Any]] = []          # last fetched departures for header_stop
+    # Initial active screen index (prefer the one matching --stop without dest filter)
+    try:
+        current_index = next(i for i, sc in enumerate(screens) if sc['origin'] == opts.stop and sc['dest_filter'] is None)
+    except StopIteration:
+        current_index = 0
+    active_screen = screens[current_index]
+    departures: List[Dict[str, Any]] = []          # last fetched departures for active screen
     last_fetch_time = 0.0                          # timestamp of last successful fetch
     next_scheduled_fetch = 0.0                     # when to fetch (rotation delay, periodic refresh)
     fetch_interval = max(15.0, float(opts.refresh))  # periodic refresh (>=15s)
@@ -421,9 +447,9 @@ def run_loop(opts: argparse.Namespace):
             next_scheduled_fetch = t
 
     def _accept_rotation(direction: int):
-        nonlocal current_index, header_stop, departures
-        current_index = (current_index + (1 if direction > 0 else -1)) % len(stop_choices)
-        header_stop = stop_choices[current_index]
+        nonlocal current_index, active_screen, departures
+        current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
+        active_screen = screens[current_index]
         # Blank departures immediately – display will show empty area for half second
         departures = []
         schedule_fetch(rotate_fetch_delay)
@@ -539,11 +565,22 @@ def run_loop(opts: argparse.Namespace):
         threading.Thread(target=_start_encoder, daemon=True).start()
 
     # Fetch helper
-    def fetch_rows(stop_name: str) -> List[Dict[str, Any]]:
-        rows = fd.fetch_stationboard(stop_name, opts.limit * 4, transportations=None if opts.all else ['tram','train'])
-        if opts.dest:
-            nf = fd._normalize(opts.dest)
-            rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
+    def fetch_rows(screen: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # Increase fetch size if we need to filter for a specific destination to ensure enough matches
+        base_fetch = opts.limit * 4
+        fetch_size = max(base_fetch, 60) if screen.get('dest_filter') else base_fetch
+        rows = fd.fetch_stationboard(screen['origin'], fetch_size, transportations=screen.get('transportations'))
+        dest_filter = screen.get('dest_filter')
+        if dest_filter:
+            nf = fd._normalize(dest_filter)
+            rows = [
+                r for r in rows
+                if (r.get('category') or '').upper() not in {'T','TRAM'} and fd._normalize(r.get('dest') or '') == nf
+            ]
+        # Apply global CLI destination filter as an additional constraint if provided
+        if getattr(opts, 'dest', ''):
+            nf_cli = fd._normalize(opts.dest)
+            rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf_cli]
         rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
         return rows[:opts.limit]
 
@@ -603,7 +640,7 @@ def run_loop(opts: argparse.Namespace):
     offscreen = matrix.CreateFrameCanvas()
     # On very early boot, system time might be wrong until NTP sync; show placeholder clock
     initial_now = "--:--" if not time_is_synchronized() else None
-    offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop, now_text=initial_now)  # blank first frame, clears stale panel content
+    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=initial_now)  # blank first frame, clears stale panel content
 
     running = True
     def _sig_handler(signum, frame):  # noqa: D401, ANN001
@@ -625,11 +662,11 @@ def run_loop(opts: argparse.Namespace):
                     next_scheduled_fetch = 0.0
                     continue
                 try:
-                    departures = fetch_rows(header_stop)
+                    departures = fetch_rows(active_screen)
                     last_fetch_time = now
                     fetch_backoff = 5.0  # reset backoff on success
                 except Exception as e:  # noqa: BLE001
-                    print(f"[fetch] Error fetching departures for '{header_stop}': {e}", file=sys.stderr)
+                    print(f"[fetch] Error fetching departures for '{active_screen['header']}': {e}", file=sys.stderr)
                     # Schedule a quick retry without waiting for full interval
                     schedule_fetch(fetch_backoff)
                     fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
@@ -645,7 +682,7 @@ def run_loop(opts: argparse.Namespace):
             # Redraw every loop (lightweight) – header may change instantly on rotation
             # If time isn't synchronized yet, render placeholder clock to avoid showing stale time
             now_txt_override = None if time_is_synchronized() else "--:--"
-            offscreen = draw_frame(offscreen, matrix, renderer, departures, header_stop, now_text=now_txt_override)
+            offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
             # If time just became synchronized and we have no departures yet, force a fetch asap
             if now_txt_override is None and not departures and not next_scheduled_fetch:
                 schedule_fetch(0.0)
