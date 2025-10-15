@@ -305,7 +305,7 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
 
     # Header: time right, stop name left truncated, 1px padding on each side.
     now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
-    inner_left = BOARD_MARGIN
+    inner_left = BOARD_MARGIN + 1
     # Header-specific left margin for stop name: 3px from the edge (includes 1px border + 2px padding)
     header_left = BOARD_MARGIN + 2
     inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside header margin
