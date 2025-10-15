@@ -53,7 +53,7 @@ except Exception:  # noqa: BLE001
 FONT = {
     ' ': ["00000"] * 7,
     '0': ["01110","10001","10011","10101","11001","10001","01110"],
-    '1': ["00100","01100","00100","00100","00100","00100","01110"],
+    '1': ["01000","11000","01000","01000","01000","01000","11100"],
     '2': ["01110","10001","00001","00010","00100","01000","11111"],
     '3': ["11110","00001","00001","01110","00001","00001","11110"],
     '4': ["10010","10010","10010","11111","00010","00010","00010"],
@@ -144,6 +144,7 @@ ADV_WIDTH = {
     'i': 3,
     'l': 3,
     'k': 4,
+    '1': 3,
 }
 DESCENDERS = {'p','g','q','y','j'}
 
@@ -291,6 +292,8 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     # Header: time right, stop name left truncated, 1px padding on each side.
     now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
     inner_left = BOARD_MARGIN
+    # Header-specific left margin for stop name: 3px from the edge (includes 1px border + 2px padding)
+    header_left = BOARD_MARGIN + 2
     inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside header margin
     inner_width = r.cols - 2 * BOARD_MARGIN
     time_w = measure(now_txt)
@@ -312,7 +315,8 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
             stop_name = alts[-1]
 
     # Truncate stop name to fit before time with at least 1px spacing
-    available_w = time_x - inner_left - CHAR_SPACING
+    # Use header_left to achieve a 3px left margin (vs. 1px general board margin)
+    available_w = time_x - header_left - CHAR_SPACING
     if available_w < 0:
         available_w = 0
 
@@ -331,8 +335,8 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     stop_name = truncate(stop_name, available_w)
 
     header_baseline = HEADER_BASELINE_Y
-    # Header left margin is exactly 1 pixel (inner_left)
-    draw_text(inner_left, header_baseline, stop_name)
+    # Draw stop name with 3px left margin
+    draw_text(header_left, header_baseline, stop_name)
     draw_text(time_x, header_baseline, now_txt)
 
     # Rule line
