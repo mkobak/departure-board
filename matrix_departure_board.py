@@ -309,7 +309,7 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     # Header-specific left margin for stop name: 3px from the edge (includes 1px border + 2px padding)
     header_left = BOARD_MARGIN + 2
     inner_right = r.cols - BOARD_MARGIN - 1  # last drawable column inside header margin
-    inner_width = r.cols - 2 * BOARD_MARGIN
+    inner_width = r.cols - 2 * BOARD_MARGIN - 1
     time_w = measure(now_txt)
     # leave 1px gap before inner_right
     time_x = inner_right - time_w  # already leaves gap since inner_right not drawn on
