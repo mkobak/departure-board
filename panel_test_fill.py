@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pwm-lsb-ns", type=int, default=None)
     p.add_argument("--dither-bits", type=int, default=1)
     p.add_argument("--pwm-bits", type=int, default=None)
+    p.add_argument("--scan-mode", type=int, choices=[0,1], default=None)
     p.add_argument("--panel-type", default=None)
     p.add_argument("--led-rgb-sequence", default=None)
     p.add_argument("--disable-hardware-pulsing", action="store_true")
@@ -83,6 +84,8 @@ def main() -> int:
         options.pwm_dither_bits = opts.dither_bits
     if opts.pwm_bits is not None:
         options.pwm_bits = opts.pwm_bits
+    if opts.scan_mode is not None:
+        options.scan_mode = opts.scan_mode
     if opts.panel_type:
         options.panel_type = opts.panel_type
     if opts.led_rgb_sequence:
