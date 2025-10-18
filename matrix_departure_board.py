@@ -263,10 +263,8 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     header_text: text to render in the header (e.g., "Basel SBB → Zürich HB")
     city_reference: station name used for same-city destination stripping
     """
-    # Clear (fill black) first – using direct pixel loops (fast enough for 128x64)
-    for y in range(renderer.rows):
-        for x in range(renderer.cols):
-            off.SetPixel(x, y, 0, 0, 0)
+    # Clear quickly using Fill (avoid per-pixel loops that cost CPU and can stutter PWM thread)
+    off.Fill(0, 0, 0)
     amber = (255, 140, 0)
 
     r = renderer
@@ -622,10 +620,16 @@ def run_loop(opts: argparse.Namespace):
     # Detect whether system time is synchronized to avoid showing stale clock at boot
     _sync_cached: Optional[bool] = None
     _sync_ts: float = 0.0
+    _sync_locked_true: bool = False  # once true, don't spawn subprocesses again
+    _sync_min_interval: float = 10.0  # seconds between checks while not yet true
     def time_is_synchronized() -> bool:
-        nonlocal _sync_cached, _sync_ts
+        nonlocal _sync_cached, _sync_ts, _sync_locked_true
         now = time.time()
-        if _sync_cached is not None and (now - _sync_ts) < 1.0:
+        # If we've confirmed sync once, stick with True without re-checking.
+        if _sync_locked_true:
+            return True
+        # Throttle external checks; cache result for a few seconds to avoid per-second subprocess spikes.
+        if _sync_cached is not None and (now - _sync_ts) < _sync_min_interval:
             return _sync_cached
         result = False
         try:
@@ -646,6 +650,8 @@ def run_loop(opts: argparse.Namespace):
                 result = False
         _sync_cached = result
         _sync_ts = now
+        if result:
+            _sync_locked_true = True
         return result
 
     # Compute next :00 or :30 boundary timestamp (epoch seconds)
@@ -685,6 +691,9 @@ def run_loop(opts: argparse.Namespace):
     signal.signal(signal.SIGTERM, _sig_handler)
 
     try:
+        # Fixed render cadence in seconds (helps avoid visible beating with PWM/refresh)
+        render_interval = 1.0 / 30.0  # ~30 FPS is plenty for static text
+        next_render = time.time()
         while running:
             now = time.time()
             # Fetch if scheduled
@@ -714,19 +723,21 @@ def run_loop(opts: argparse.Namespace):
             if departures and now >= next_periodic_refresh:
                 schedule_fetch(0.0)
                 next_periodic_refresh = now + fetch_interval
-            # Redraw every loop (lightweight) – header may change instantly on rotation
-            # If time isn't synchronized yet, render placeholder clock to avoid showing stale time
-            now_txt_override = None if time_is_synchronized() else "--:--"
-            offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
+            # Redraw at a fixed cadence. If time isn't synchronized yet, render placeholder clock.
+            if now >= next_render:
+                now_txt_override = None if time_is_synchronized() else "--:--"
+                offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
+                next_render += render_interval
+                # Avoid drift if we fall behind
+                if next_render < now:
+                    next_render = now + render_interval
             # If time just became synchronized and we have no departures yet, force a fetch asap
             if now_txt_override is None and not departures and not next_scheduled_fetch:
                 schedule_fetch(0.0)
-            # Compute dynamic sleep (shorter while we're waiting for a scheduled fetch soon)
-            sleep_target = 0.1
-            if next_scheduled_fetch:
-                until_fetch = max(0.0, next_scheduled_fetch - time.time())
-                sleep_target = min(sleep_target, max(0.02, until_fetch))
-            time.sleep(sleep_target)
+            # Sleep until the next interesting event (render tick or scheduled fetch)
+            t_until_render = max(0.0, next_render - time.time())
+            t_until_fetch = max(0.0, (next_scheduled_fetch - time.time()) if next_scheduled_fetch else 1.0)
+            time.sleep(min(t_until_render, t_until_fetch, 0.05))
     finally:
         if encoder:
             try:
