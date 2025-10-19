@@ -33,6 +33,7 @@ from typing import List, Dict, Any, Optional, Callable
 
 import fetch_departures as fd
 import threading
+import requests
 try:
     from rotary_encoder import RotaryEncoder  # type: ignore
     _HAVE_ENCODER = True
@@ -53,6 +54,15 @@ except Exception:  # noqa: BLE001
 # --------------------------------------------------------------------------------------
 FONT = {
     ' ': ["00000"] * 7,
+    '°': [
+        "01100",
+        "10010",
+        "10010",
+        "01100",
+        "00000",
+        "00000",
+        "00000",
+    ],
     '0': ["01110","10001","10011","10101","11001","10001","01110"],
     '1': ["00100","01100","00100","00100","00100","00100","01110"],
     '2': ["01110","10001","00001","00010","00100","01000","11111"],
@@ -147,6 +157,7 @@ LINE_SPACING = 5
 # Variable advance overrides:
 ADV_WIDTH = {
     ' ': 2,
+    '°': 3,
     '-': 3,
     "'": 1,
     ',': 1,
@@ -167,6 +178,94 @@ DEST_MINS_GAP = 4
 RIGHT_MARGIN = 1
 MIN_IDENT_CHARS = 2
 BOARD_MARGIN = 1  # ensure 1px dark border on all sides
+
+# ----------------------------- Weather support -----------------------------
+# Minimal weather integration using Open-Meteo (no API key needed)
+# We'll render two weather screens: Basel and Zürich.
+
+class WeatherData(Dict[str, Any]):
+    pass
+
+WEATHER_CITIES = [
+    {
+        'city': 'Basel',
+        'lat': 47.5596,
+        'lon': 7.5886,
+        'header': 'Basel',
+    },
+    {
+        'city': 'Zürich',
+        'lat': 47.3769,
+        'lon': 8.5417,
+        'header': 'Zürich',
+    },
+]
+
+def _w_code_to_kind_desc(code: int) -> Dict[str, str]:
+    """Map Open-Meteo weather_code to a coarse kind and description.
+    Kinds: sunny, partly, cloudy, fog, rain, snow, thunder
+    """
+    # Ref: https://open-meteo.com/en/docs
+    if code in (0,):
+        return {'kind': 'sunny', 'desc': 'Sonnig'}
+    if code in (1, 2):
+        return {'kind': 'partly', 'desc': 'Wolkig'}
+    if code in (3,):
+        return {'kind': 'cloudy', 'desc': 'Bedeckt'}
+    if code in (45, 48):
+        return {'kind': 'fog', 'desc': 'Nebel'}
+    if code in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82):
+        return {'kind': 'rain', 'desc': 'Regen'}
+    if code in (71, 73, 75, 77, 85, 86):
+        return {'kind': 'snow', 'desc': 'Schnee'}
+    if code in (95, 96, 99):
+        return {'kind': 'thunder', 'desc': 'Gewitter'}
+    return {'kind': 'cloudy', 'desc': 'Wetter'}
+
+def fetch_weather(lat: float, lon: float, timeout: float = 6.0) -> WeatherData:
+    tz = 'Europe/Zurich'
+    url = (
+        'https://api.open-meteo.com/v1/forecast'
+        f'?latitude={lat}&longitude={lon}'
+        '&current=temperature_2m,weather_code,relative_humidity_2m,apparent_temperature,wind_speed_10m'
+        '&daily=temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_probability_max'
+        f'&timezone={tz}'
+    )
+    # Split timeouts similar to departures
+    connect_timeout = min(1.0, max(0.2, timeout / 3.0))
+    read_timeout = max(2.5, timeout)
+    r = requests.get(url, timeout=(connect_timeout, read_timeout))
+    r.raise_for_status()
+    j = r.json()
+    cur = j.get('current', {}) or j.get('current_weather', {})
+    daily = j.get('daily', {})
+    # Some variants use 'current_weather'; normalize keys
+    temp_now = cur.get('temperature_2m') if 'temperature_2m' in cur else cur.get('temperature')
+    wcode = int(cur.get('weather_code') if 'weather_code' in cur else cur.get('weathercode', 0) or 0)
+    kind_desc = _w_code_to_kind_desc(wcode)
+    tmin_list = list(daily.get('temperature_2m_min') or []) if daily else []
+    tmax_list = list(daily.get('temperature_2m_max') or []) if daily else []
+    pprob_list = list(daily.get('precipitation_probability_max') or []) if daily else []
+    uvmax_list = list(daily.get('uv_index_max') or []) if daily else []
+    tmin0 = tmin_list[0] if tmin_list else None
+    tmax0 = tmax_list[0] if tmax_list else None
+    pprob0 = pprob_list[0] if pprob_list else None
+    uvmax0 = uvmax_list[0] if uvmax_list else None
+    out: WeatherData = WeatherData(
+        now_temp=round(float(temp_now)) if temp_now is not None else None,
+        app_temp=round(float(cur.get('apparent_temperature'))) if cur.get('apparent_temperature') is not None else None,
+        rh=int(cur.get('relative_humidity_2m')) if cur.get('relative_humidity_2m') is not None else None,
+        wind=round(float(cur.get('wind_speed_10m'))) if cur.get('wind_speed_10m') is not None else None,
+        code=wcode,
+        kind=kind_desc['kind'],
+        desc=kind_desc['desc'],
+        tmin=round(float(tmin0)) if tmin0 is not None else None,
+        tmax=round(float(tmax0)) if tmax0 is not None else None,
+        pprob=int(round(float(pprob0))) if pprob0 is not None else None,
+        uvmax=int(round(float(uvmax0))) if uvmax0 is not None else None,
+    )
+    return out
+
 
 class Renderer:
     def __init__(self, cols: int, rows: int):
@@ -392,6 +491,164 @@ def draw_frame(off, matrix: RGBMatrix, renderer: Renderer, rows: List[Dict[str, 
     return matrix.SwapOnVSync(off)
 
 
+def draw_weather_frame(off, matrix: RGBMatrix, renderer: Renderer, header_text: str, weather: Optional[WeatherData], now_text: Optional[str] = None):  # type: ignore[name-defined]
+    """Draw a weather screen with header and a simple pictogram.
+
+    Content layout:
+    - Header: city left (derived from header_text), time right
+    - Rule line
+    - Middle: icon on left, temps and conditions on right
+    - Bottom line: extra info if space allows
+    """
+    off.Fill(0, 0, 0)
+    amber = (255, 140, 0)
+    r = renderer
+
+    HEADER_BASELINE_Y = 2
+    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3
+    CONTENT_Y = RULE_Y + 1 + 6
+
+    def glyph_width(ch: str) -> int:
+        return r.glyph_width(ch)
+
+    def draw_glyph(x: int, y: int, ch: str):
+        bmp = BITMAP.get(ch, BITMAP[' '])
+        whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
+        for dy, brow in enumerate(bmp):
+            for dx, bit in enumerate(brow[:glyph_width(ch)]):
+                if bit:
+                    off.SetPixel(x+dx, y+dy+whole_offset, *amber)
+
+    def measure(text: str) -> int:
+        return r.measure(text)
+
+    def draw_text(x: int, y: int, text: str):
+        cur = x
+        for i, ch in enumerate(text):
+            draw_glyph(cur, y, ch)
+            cur += glyph_width(ch)
+            if i != len(text) - 1:
+                cur += CHAR_SPACING
+        return cur - x
+
+    def truncate(text: str, max_w: int) -> str:
+        acc = []
+        cur = 0
+        for ch in text:
+            w = glyph_width(ch)
+            add = w if not acc else CHAR_SPACING + w
+            if cur + add > max_w:
+                break
+            acc.append(ch)
+            cur += add
+        return ''.join(acc)
+
+    # Header
+    now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
+    inner_left = BOARD_MARGIN + 2
+    inner_right = r.cols - BOARD_MARGIN - 1
+    inner_width = r.cols - 2 * BOARD_MARGIN - 1
+    time_w = measure(now_txt)
+    time_x = inner_right - time_w
+    city = header_text.strip()
+    city = truncate(city, max(0, time_x - inner_left - CHAR_SPACING))
+    draw_text(inner_left, HEADER_BASELINE_Y, city)
+    draw_text(time_x, HEADER_BASELINE_Y, now_txt)
+
+    # Rule
+    for x in range(0, r.cols):
+        off.SetPixel(x, RULE_Y, *amber)
+
+    # Icon painter (simple, pixel art 22x16 approx)
+    def draw_icon(x0: int, y0: int, kind: str):
+        def p(x: int, y: int):
+            if 0 <= x < r.cols and 0 <= y < r.rows:
+                off.SetPixel(x, y, *amber)
+        if kind == 'sunny' or kind == 'partly':
+            # Sun: small circle with rays
+            cx, cy = x0+10, y0+8
+            # circle
+            for dx in range(-4,5):
+                for dy in range(-3,4):
+                    if (dx*dx + (dy*1.1)*(dy*1.1)) <= 16:
+                        p(cx+dx, cy+dy)
+            # rays
+            for i in range(-8,9,4):
+                p(cx+i, cy)
+                p(cx, cy+i//2)
+        if kind in ('cloudy','partly','rain','snow','thunder','fog'):
+            # Cloud: two bumps
+            bx, by = x0+4, y0+10
+            for dx in range(0,18):
+                p(bx+dx, by)
+            for dx in range(-2,5):
+                for dy in range(-2,3):
+                    if dx*dx + dy*dy <= 6:
+                        p(bx+3+dx, by-2+dy)
+            for dx in range(-3,6):
+                for dy in range(-2,3):
+                    if dx*dx + dy*dy <= 9:
+                        p(bx+10+dx, by-3+dy)
+        if kind in ('rain','thunder'):
+            # Rain lines under cloud
+            for rx in (x0+6, x0+10, x0+14):
+                for k in range(0,4):
+                    p(rx+k%2, y0+12+k)
+        if kind == 'snow':
+            # Simple snow asterisks
+            for sx in (x0+6, x0+12, x0+16):
+                for dy in (-1,0,1):
+                    p(sx, y0+12+dy)
+                for dx in (-1,0,1):
+                    p(sx+dx, y0+12)
+        if kind == 'thunder':
+            # Bolt
+            for (dx, dy) in ((12,12),(11,13),(10,14),(13,14),(12,15)):
+                p(x0+dx, y0+dy)
+
+    # Content text
+    kind = weather['kind'] if weather else 'cloudy'
+    draw_icon(BOARD_MARGIN+2, CONTENT_Y, kind)
+
+    # Right of icon, show temps and description
+    text_x = BOARD_MARGIN + 28
+    tmin = weather.get('tmin') if weather else None
+    tmax = weather.get('tmax') if weather else None
+    nowt = weather.get('now_temp') if weather else None
+    desc_val = weather.get('desc') if weather else '--'
+    desc = desc_val if isinstance(desc_val, str) else '--'
+    top_line = ''
+    if tmin is not None and tmax is not None:
+        top_line = f"{tmin}°/{tmax}°"
+    elif nowt is not None:
+        top_line = f"{nowt}°"
+    else:
+        top_line = "--°/--°"
+    # Fit top line
+    top_line = truncate(top_line, max(0, r.cols - text_x - BOARD_MARGIN))
+    draw_text(text_x, CONTENT_Y, top_line)
+    # Second line: description + precip prob
+    pprob = weather.get('pprob') if weather else None
+    sec = desc
+    if isinstance(pprob, int):
+        sec = f"{sec} {pprob}%"
+    sec = truncate(sec, max(0, r.cols - text_x - BOARD_MARGIN))
+    draw_text(text_x, CONTENT_Y + CHAR_H + 3, sec)
+    # Third line: wind and feels-like
+    wind = weather.get('wind') if weather else None
+    app = weather.get('app_temp') if weather else None
+    third_parts = []
+    if wind is not None:
+        third_parts.append(f"Wind {wind}")
+    if app is not None:
+        third_parts.append(f"Gefühlt {app}°")
+    third = '  '.join(third_parts) if third_parts else ''
+    third = truncate(third, max(0, r.cols - text_x - BOARD_MARGIN))
+    draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), third)
+
+    return matrix.SwapOnVSync(off)
+
+
 def run_loop(opts: argparse.Namespace):
     if not MATRIX_AVAILABLE:
         print("rgbmatrix library not available. Falling back to plain text output (developer mode).", file=sys.stderr)
@@ -432,6 +689,16 @@ def run_loop(opts: argparse.Namespace):
         'dest_filter': 'Zürich HB',
     })
 
+    # Add two weather screens (Basel & Zürich)
+    for w in WEATHER_CITIES:
+        screens.append({
+            'type': 'weather',
+            'header': w['header'],
+            'city': w['city'],
+            'lat': w['lat'],
+            'lon': w['lon'],
+        })
+
     # --- Simplified State Machine --------------------------------------------------
     # Initial active screen index (prefer the one matching --stop without dest filter)
     try:
@@ -465,6 +732,10 @@ def run_loop(opts: argparse.Namespace):
         t = time.time() + delay
         if next_scheduled_fetch == 0.0 or t < next_scheduled_fetch:
             next_scheduled_fetch = t
+
+    # Weather cache
+    weather_cache: Dict[str, Dict[str, Any]] = {}
+    # keys -> {'data': WeatherData|None, 'ts': float}
 
     def _accept_rotation(direction: int):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page
@@ -645,7 +916,7 @@ def run_loop(opts: argparse.Namespace):
                 encoder = None
         threading.Thread(target=_start_encoder, daemon=True).start()
 
-    # Fetch helper
+    # Fetch helpers
     def fetch_rows(screen: Dict[str, Any], timeout: float = 10.0) -> List[Dict[str, Any]]:
         # Increase fetch size to ensure enough items for two pages even after filtering
         base_fetch = max(opts.limit * 6, 40)
@@ -683,6 +954,9 @@ def run_loop(opts: argparse.Namespace):
         rows.sort(key=lambda r: r.get('mins', 0))
         # Return enough rows for two pages (and a small safety buffer)
         return rows[: max(int(opts.limit * 2.5), 10)]
+
+    def fetch_weather_for_screen(screen: Dict[str, Any], timeout: float = 6.0) -> WeatherData:
+        return fetch_weather(float(screen['lat']), float(screen['lon']), timeout=timeout)
 
     # Detect whether system time is synchronized; in 'auto' mode trust RTC/plausible clock
     _sync_cached: Optional[bool] = None
@@ -779,16 +1053,28 @@ def run_loop(opts: argparse.Namespace):
         def _worker():
             nonlocal fetch_in_flight, departures, last_fetch_time, fetch_backoff, next_periodic_refresh, current_fetch_timeout
             try:
-                rows_local = fetch_rows(screen_snapshot, timeout=current_fetch_timeout)
-                # Only apply if still on the same screen
-                if screen_snapshot is active_screen or screen_snapshot.get('header') == active_screen.get('header'):
-                    departures_all[:] = rows_local
-                    _update_display_rows_from_page()
+                if screen_snapshot.get('type') == 'weather':
+                    # Fetch and cache weather
+                    key = f"{screen_snapshot.get('city','')}"
+                    try:
+                        w_new = fetch_weather_for_screen(screen_snapshot)
+                        weather_cache[key] = {'data': w_new, 'ts': time.time()}
+                    except Exception as we:  # noqa: BLE001
+                        print(f"[weather] fetch error for {key}: {we}", file=sys.stderr)
+                    # Keep departures untouched
                     last_fetch_time = time.time()
                     fetch_backoff = 5.0
-                    next_periodic_refresh = last_fetch_time + fetch_interval
-                    # Gradually increase timeout after a success (cap at 10s)
-                    current_fetch_timeout = min(10.0, max(current_fetch_timeout, 3.0))
+                else:
+                    rows_local = fetch_rows(screen_snapshot, timeout=current_fetch_timeout)
+                    # Only apply if still on the same screen
+                    if screen_snapshot is active_screen or screen_snapshot.get('header') == active_screen.get('header'):
+                        departures_all[:] = rows_local
+                        _update_display_rows_from_page()
+                        last_fetch_time = time.time()
+                        fetch_backoff = 5.0
+                        next_periodic_refresh = last_fetch_time + fetch_interval
+                        # Gradually increase timeout after a success (cap at 10s)
+                        current_fetch_timeout = min(10.0, max(current_fetch_timeout, 3.0))
             except Exception as e:  # noqa: BLE001
                 print(f"[fetch] Error fetching departures for '{screen_snapshot.get('header','?')}': {e}", file=sys.stderr)
                 # Quick retry with exponential backoff (cap 60s); also slightly increase timeout
@@ -843,7 +1129,22 @@ def run_loop(opts: argparse.Namespace):
             # Redraw at a fixed cadence. In strict mode before sync, render placeholder clock.
             if now >= next_render:
                 now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
-                offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
+                if active_screen.get('type') == 'weather':
+                    key = f"{active_screen['city']}"
+                    w_entry = weather_cache.get(key)
+                    # Refresh weather every 10 minutes
+                    w_data = w_entry['data'] if (w_entry and (now - w_entry['ts'] < 600)) else None
+                    if w_data is None and not fetch_in_flight and time_is_synchronized():
+                        # Opportunistic refresh outside scheduled fetch
+                        try:
+                            w_new = fetch_weather_for_screen(active_screen)
+                            weather_cache[key] = {'data': w_new, 'ts': time.time()}
+                            w_data = w_new
+                        except Exception as e:  # noqa: BLE001
+                            print(f"[weather] fetch error for {key}: {e}", file=sys.stderr)
+                    offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override)
+                else:
+                    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
                 next_render += render_interval
                 # Avoid drift if we fall behind
                 if next_render < now:
