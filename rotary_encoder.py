@@ -101,8 +101,10 @@ class RotaryEncoder:
         self._last_clk_edge_time: float = 0.0
         # Button state for polling latch
         self._sw_last_level = None  # type: ignore[assignment]
-        # Current button press state (True when held). Used to suppress rotations during press.
+        # Current button press state (True when held)
         self._button_down = False
+        # Assume idle HIGH by default; corrected on start using actual read
+        self._sw_idle_level = 1
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -146,9 +148,11 @@ class RotaryEncoder:
             else:
                 try:
                     sw0 = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
-                    self._button_down = (sw0 == 0)
+                    self._sw_idle_level = sw0
+                    self._button_down = (sw0 != self._sw_idle_level)
                 except Exception:
                     self._button_down = False
+                    self._sw_idle_level = 1
             if not self._force_polling:
                 try:
                     # Primary strategy: hardware event detection on CLK rising edge only
@@ -186,9 +190,6 @@ class RotaryEncoder:
                                     else:
                                         dt_state = GPIO.input(self.pin_dt) if self.pin_dt is not None else 1  # type: ignore[attr-defined]
                                         step = +1 if dt_state == 0 else -1
-                                    # Suppress rotation while button is debounced-held
-                                    if self._button_down:
-                                        step = 0
                                     self._movement += step
                                     if abs(self._movement) >= self._steps_per_detent:
                                         delta = 1 if self._movement > 0 else -1
@@ -228,9 +229,10 @@ class RotaryEncoder:
                                 if (nowp - sw_raw_change_t) >= debounce_s:
                                     sw_debounced = sw_raw
                             if sw_debounced != sw_last_debounced:
-                                # Update button_down based on debounced level
-                                self._button_down = (sw_debounced == 0)
-                                if self.on_button and sw_last_debounced == 1 and sw_debounced == 0:
+                                # Update button_down based on debounced level vs idle
+                                self._button_down = (sw_debounced != self._sw_idle_level)
+                                # Press detected on transition from idle -> active
+                                if self.on_button and (sw_last_debounced == self._sw_idle_level) and (sw_debounced != self._sw_idle_level):
                                     # Falling edge -> press
                                     if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
                                         self._last_button_time = nowp
@@ -269,8 +271,9 @@ class RotaryEncoder:
                         if (nowp - sw_raw_change_t) >= debounce_s:
                             sw_debounced = sw_level
                     if sw_debounced != sw_last_debounced:
-                        self._button_down = (sw_debounced == 0)
-                        if self.on_button and sw_last_debounced == 1 and sw_debounced == 0:
+                        self._button_down = (sw_debounced != self._sw_idle_level)
+                        # Press edge: idle -> active
+                        if self.on_button and (sw_last_debounced == self._sw_idle_level) and (sw_debounced != self._sw_idle_level):
                             if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
                                 self._last_button_time = nowp
                                 try:
