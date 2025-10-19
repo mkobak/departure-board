@@ -28,6 +28,7 @@ import sys
 import time
 from datetime import datetime
 import subprocess
+import os
 from typing import List, Dict, Any, Optional, Callable
 
 import fetch_departures as fd
@@ -589,11 +590,16 @@ def run_loop(opts: argparse.Namespace):
         threading.Thread(target=_start_encoder, daemon=True).start()
 
     # Fetch helper
-    def fetch_rows(screen: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def fetch_rows(screen: Dict[str, Any], timeout: float = 10.0) -> List[Dict[str, Any]]:
         # Increase fetch size if we need to filter for a specific destination to ensure enough matches
         base_fetch = opts.limit * 4
         fetch_size = max(base_fetch, 60) if screen.get('dest_filter') else base_fetch
-        rows = fd.fetch_stationboard(screen['origin'], fetch_size, transportations=screen.get('transportations'))
+        rows = fd.fetch_stationboard(
+            screen['origin'],
+            fetch_size,
+            transportations=screen.get('transportations'),
+            timeout=timeout,
+        )
         dest_filter = screen.get('dest_filter')
         if dest_filter:
             nf = fd._normalize(dest_filter)
@@ -617,18 +623,43 @@ def run_loop(opts: argparse.Namespace):
         rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
         return rows[:opts.limit]
 
-    # Detect whether system time is synchronized to avoid showing stale clock at boot
+    # Detect whether system time is synchronized; in 'auto' mode trust RTC/plausible clock
     _sync_cached: Optional[bool] = None
     _sync_ts: float = 0.0
     _sync_locked_true: bool = False  # once true, don't spawn subprocesses again
-    _sync_min_interval: float = 10.0  # seconds between checks while not yet true
+    _sync_min_interval: float = 15.0  # seconds between checks while not yet true
+
+    ntp_wait_mode = getattr(opts, 'ntp_wait_mode', 'auto')  # 'auto' | 'strict' | 'skip'
+
+    def _rtc_present() -> bool:
+        try:
+            return os.path.exists('/sys/class/rtc/rtc0')
+        except Exception:
+            return False
+
+    def _time_looks_sane() -> bool:
+        try:
+            year = datetime.now().year
+            return year >= 2023
+        except Exception:
+            return False
+
     def time_is_synchronized() -> bool:
         nonlocal _sync_cached, _sync_ts, _sync_locked_true
+        # Mode shortcuts
+        if ntp_wait_mode == 'skip':
+            return True
+        if ntp_wait_mode == 'auto':
+            # If RTC present or clock looks sane, treat as synced immediately
+            if _rtc_present() or _time_looks_sane():
+                _sync_locked_true = True
+                _sync_cached = True
+                _sync_ts = time.time()
+                return True
+        # 'strict' or didn't pass auto heuristics: actually query NTP status
         now = time.time()
-        # If we've confirmed sync once, stick with True without re-checking.
         if _sync_locked_true:
             return True
-        # Throttle external checks; cache result for a few seconds to avoid per-second subprocess spikes.
         if _sync_cached is not None and (now - _sync_ts) < _sync_min_interval:
             return _sync_cached
         result = False
@@ -637,17 +668,13 @@ def run_loop(opts: argparse.Namespace):
                 ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
                 stderr=subprocess.DEVNULL,
                 text=True,
-                timeout=1.0,
+                timeout=1.2,
             ).strip().lower()
             if out in {"yes", "true", "1"}:
                 result = True
         except Exception:
-            # Fallback heuristic: consider time sane if year is reasonably current
-            try:
-                if datetime.now().year >= 2024:
-                    result = True
-            except Exception:
-                result = False
+            # Fallback heuristic
+            result = _time_looks_sane()
         _sync_cached = result
         _sync_ts = now
         if result:
@@ -676,11 +703,43 @@ def run_loop(opts: argparse.Namespace):
     next_periodic_refresh = time.time() + fetch_interval
     fetch_backoff = 5.0  # quick retry when fetch fails at boot; increases up to 60s
     last_time_sync_state = time_is_synchronized()
+    # Background fetch control
+    fetch_in_flight = False
+    current_fetch_timeout = 2.5  # short initial timeout to avoid long stalls at boot
+
+    def start_fetch():
+        nonlocal fetch_in_flight, departures, last_fetch_time, fetch_backoff, next_periodic_refresh, current_fetch_timeout
+        if fetch_in_flight:
+            return
+        # Snapshot the active screen at start to fetch a consistent target
+        screen_snapshot = dict(active_screen)
+        fetch_in_flight = True
+        def _worker():
+            nonlocal fetch_in_flight, departures, last_fetch_time, fetch_backoff, next_periodic_refresh, current_fetch_timeout
+            try:
+                rows_local = fetch_rows(screen_snapshot, timeout=current_fetch_timeout)
+                # Only apply if still on the same screen
+                if screen_snapshot is active_screen or screen_snapshot.get('header') == active_screen.get('header'):
+                    departures[:] = rows_local
+                    last_fetch_time = time.time()
+                    fetch_backoff = 5.0
+                    next_periodic_refresh = last_fetch_time + fetch_interval
+                    # Gradually increase timeout after a success (cap at 10s)
+                    current_fetch_timeout = min(10.0, max(current_fetch_timeout, 3.0))
+            except Exception as e:  # noqa: BLE001
+                print(f"[fetch] Error fetching departures for '{screen_snapshot.get('header','?')}': {e}", file=sys.stderr)
+                # Quick retry with exponential backoff (cap 60s); also slightly increase timeout
+                fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
+                current_fetch_timeout = min(10.0, current_fetch_timeout + 1.0)
+                schedule_fetch(fetch_backoff)
+            finally:
+                fetch_in_flight = False
+        threading.Thread(target=_worker, daemon=True).start()
 
     # Single off-screen canvas reused (fix for CreateFrameCanvas spam)
     offscreen = matrix.CreateFrameCanvas()
-    # On very early boot, system time might be wrong until NTP sync; show placeholder clock
-    initial_now = "--:--" if not time_is_synchronized() else None
+    # On very early boot, show real clock immediately in auto/skip modes; placeholder only in strict mode without sync
+    initial_now = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
     offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=initial_now)  # blank first frame, clears stale panel content
 
     running = True
@@ -698,41 +757,28 @@ def run_loop(opts: argparse.Namespace):
             now = time.time()
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
-                # If system time isn't synced yet, don't fetch (mins would be wrong); retry soon
+                # If system time isn't synced yet (strict mode), don't fetch; retry soon
                 if not time_is_synchronized():
                     schedule_fetch(min(5.0, fetch_backoff))
                     last_time_sync_state = False
-                    # draw loop continues with placeholder clock
                     next_scheduled_fetch = 0.0
-                    continue
-                try:
-                    departures = fetch_rows(active_screen)
-                    last_fetch_time = now
-                    fetch_backoff = 5.0  # reset backoff on success
-                except Exception as e:  # noqa: BLE001
-                    print(f"[fetch] Error fetching departures for '{active_screen['header']}': {e}", file=sys.stderr)
-                    # Schedule a quick retry without waiting for full interval
-                    schedule_fetch(fetch_backoff)
-                    fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
-                finally:
+                else:
+                    start_fetch()
                     next_scheduled_fetch = 0.0
-                    # Only set periodic refresh after a successful fetch; otherwise keep quick retries
-                    if departures:
-                        next_periodic_refresh = now + fetch_interval
             # Periodic refresh if stale (even without rotation)
-            if departures and now >= next_periodic_refresh:
+            if departures and now >= next_periodic_refresh and not fetch_in_flight:
                 schedule_fetch(0.0)
                 next_periodic_refresh = now + fetch_interval
-            # Redraw at a fixed cadence. If time isn't synchronized yet, render placeholder clock.
+            # Redraw at a fixed cadence. In strict mode before sync, render placeholder clock.
             if now >= next_render:
-                now_txt_override = None if time_is_synchronized() else "--:--"
+                now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
                 offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
                 next_render += render_interval
                 # Avoid drift if we fall behind
                 if next_render < now:
                     next_render = now + render_interval
             # If time just became synchronized and we have no departures yet, force a fetch asap
-            if now_txt_override is None and not departures and not next_scheduled_fetch:
+            if (now_txt_override is None) and not departures and not next_scheduled_fetch and not fetch_in_flight:
                 schedule_fetch(0.0)
             # Sleep until the next interesting event (render tick or scheduled fetch)
             t_until_render = max(0.0, next_render - time.time())
@@ -797,6 +843,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Minimum seconds between accepted detents (debounce at app level)')
     p.add_argument('--enc-steps-per-detent', type=int, default=1,
                    help='Steps per detent: 1 for directionless (CLK only), 2/4 if using full quadrature')
+    p.add_argument('--ntp-wait-mode', choices=['auto','strict','skip'], default='auto',
+                   help="Time sync strategy at boot: 'auto' (default) trusts RTC or plausible clock, 'strict' waits for NTP, 'skip' never waits")
     return p.parse_args(argv)
 
 
