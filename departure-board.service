@@ -11,15 +11,22 @@ Group=mk
 # Working directory with virtual environment
 WorkingDirectory=/home/mk/departure-board
 # Use the virtual environment python so requests (and future deps) are isolated (PEP 668 compliant)
-ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 60 --gpio-mapping adafruit-hat --encoder-early --encoder-delay 0.05 --enc-clk 7 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --limit-refresh-hz 240 --slowdown-gpio 1 --pwm-lsb-ns 150
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 60 --gpio-mapping adafruit-hat --encoder-delay 0.05 --enc-clk 7 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --limit-refresh-hz 240 --slowdown-gpio 1 --pwm-lsb-ns 150
 Restart=on-failure
 RestartSec=5
-Nice=5
 Environment=TZ=Europe/Zurich
+
+# Allow realtime scheduling so the rgbmatrix PWM thread avoids jitter while staying non-root
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+LimitRTPRIO=99
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=80
 
 # If GPIO access fails (permission), either:
 #   1) Run as root (comment User/Group) OR
 #   2) Add user to gpio group: sudo usermod -aG gpio mk (then reboot)
+# Note: keeping encoder enabled but without --encoder-early/--enc-poll to reduce timing jitter.
 
 [Install]
 WantedBy=multi-user.target
