@@ -719,8 +719,8 @@ def draw_weather_frame(off, matrix: RGBMatrix, renderer: Renderer, header_text: 
     app = weather.get('app_temp') if weather else None
 
     line1 = f"Min/Max: {tmin if tmin is not None else '--'}°/{tmax if tmax is not None else '--'}°"
-    line2 = f"Wind {wind if wind is not None else '--'}" + (" km/h" if wind is not None else "")
-    line3 = f"Real feel {app if app is not None else '--'}°"
+    line2 = f"Wind: {wind if wind is not None else '--'}" + (" km/h" if wind is not None else "")
+    line3 = f"Real feel: {app if app is not None else '--'}°"
 
     draw_text(text_x, CONTENT_Y, truncate(line1, max(0, r.cols - text_x - BOARD_MARGIN)))
     draw_text(text_x, CONTENT_Y + CHAR_H + 3, truncate(line2, max(0, r.cols - text_x - BOARD_MARGIN)))
