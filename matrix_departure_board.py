@@ -157,7 +157,7 @@ LINE_SPACING = 5
 # Variable advance overrides:
 ADV_WIDTH = {
     ' ': 2,
-    '°': 3,
+    '°': 4,
     '-': 3,
     "'": 1,
     ',': 1,
@@ -221,6 +221,139 @@ def _w_code_to_kind_desc(code: int) -> Dict[str, str]:
     if code in (95, 96, 99):
         return {'kind': 'thunder', 'desc': 'Gewitter'}
     return {'kind': 'cloudy', 'desc': 'Wetter'}
+
+# Predefined 15x15 pixel icons (1 = lit, 0 = dark). Easy to edit.
+# Keys should match values from _w_code_to_kind_desc.kind
+ICON_SIZE = 15
+WEATHER_ICONS: Dict[str, List[str]] = {
+    'sunny': [
+        "000001110000000",
+        "000111111100000",
+        "001111111110000",
+        "011111111111000",
+        "011111111111000",
+        "111111111111100",
+        "111111111111100",
+        "111111111111100",
+        "111111111111100",
+        "011111111111000",
+        "011111111111000",
+        "001111111110000",
+        "000111111100000",
+        "000001110000000",
+        "000000000000000",
+    ],
+    'partly': [
+        # Sun (top-left) + cloud (bottom-right)
+        "000001110000000",
+        "000111111100000",
+        "001111111110000",
+        "011111111111000",
+        "011111111111000",
+        "111111111111100",
+        "111111111111100",
+        "111111111111100",
+        # Cloud overlay (lower rows)
+        "000000111100000",
+        "000011111111000",
+        "000111111111100",
+        "001111111111110",
+        "001111111111110",
+        "000111111111100",
+        "000001111110000",
+    ],
+    'cloudy': [
+        "000000000000000",
+        "000000000000000",
+        "000001111110000",
+        "000111111111100",
+        "001111111111110",
+        "011111111111111",
+        "011111111111111",
+        "001111111111110",
+        "000011111111000",
+        "000000111110000",
+        "000000000000000",
+        "000000000000000",
+        "000000000000000",
+        "000000000000000",
+        "000000000000000",
+    ],
+    'fog': [
+        "000000000000000",
+        "000000000000000",
+        "001111111111110",
+        "000000000000000",
+        "001111111111110",
+        "000000000000000",
+        "001111111111110",
+        "000000000000000",
+        "001111111111110",
+        "000000000000000",
+        "001111111111110",
+        "000000000000000",
+        "000000000000000",
+        "000000000000000",
+        "000000000000000",
+    ],
+    'rain': [
+        # Cloud
+        "000000111100000",
+        "000011111111000",
+        "000111111111100",
+        "001111111111110",
+        "001111111111110",
+        "000111111111100",
+        "000001111110000",
+        # Rain
+        "000010000010000",
+        "000000100000100",
+        "000010000010000",
+        "000000100000100",
+        "000010000010000",
+        "000000100000100",
+        "000010000010000",
+        "000000000000000",
+    ],
+    'snow': [
+        # Cloud
+        "000000111100000",
+        "000011111111000",
+        "000111111111100",
+        "001111111111110",
+        "001111111111110",
+        "000111111111100",
+        "000001111110000",
+        # Snow (asterisks)
+        "000000100000000",
+        "000001110000100",
+        "000000100001110",
+        "000000000000100",
+        "000001110000000",
+        "000000100000000",
+        "000000000000000",
+        "000000000000000",
+    ],
+    'thunder': [
+        # Cloud
+        "000000111100000",
+        "000011111111000",
+        "000111111111100",
+        "001111111111110",
+        "001111111111110",
+        "000111111111100",
+        "000001111110000",
+        # Bolt
+        "000000001100000",
+        "000000011000000",
+        "000000110000000",
+        "000001111100000",
+        "000000011000000",
+        "000000001100000",
+        "000000000000000",
+        "000000000000000",
+    ],
+}
 
 def fetch_weather(lat: float, lon: float, timeout: float = 6.0) -> WeatherData:
     tz = 'Europe/Zurich'
@@ -559,92 +692,39 @@ def draw_weather_frame(off, matrix: RGBMatrix, renderer: Renderer, header_text: 
     for x in range(0, r.cols):
         off.SetPixel(x, RULE_Y, *amber)
 
-    # Icon painter (simple, pixel art 22x16 approx)
+    # Icon painter from predefined bitmap
     def draw_icon(x0: int, y0: int, kind: str):
-        def p(x: int, y: int):
-            if 0 <= x < r.cols and 0 <= y < r.rows:
-                off.SetPixel(x, y, *amber)
-        if kind == 'sunny' or kind == 'partly':
-            # Sun: small circle with rays
-            cx, cy = x0+10, y0+8
-            # circle
-            for dx in range(-4,5):
-                for dy in range(-3,4):
-                    if (dx*dx + (dy*1.1)*(dy*1.1)) <= 16:
-                        p(cx+dx, cy+dy)
-            # rays
-            for i in range(-8,9,4):
-                p(cx+i, cy)
-                p(cx, cy+i//2)
-        if kind in ('cloudy','partly','rain','snow','thunder','fog'):
-            # Cloud: two bumps
-            bx, by = x0+4, y0+10
-            for dx in range(0,18):
-                p(bx+dx, by)
-            for dx in range(-2,5):
-                for dy in range(-2,3):
-                    if dx*dx + dy*dy <= 6:
-                        p(bx+3+dx, by-2+dy)
-            for dx in range(-3,6):
-                for dy in range(-2,3):
-                    if dx*dx + dy*dy <= 9:
-                        p(bx+10+dx, by-3+dy)
-        if kind in ('rain','thunder'):
-            # Rain lines under cloud
-            for rx in (x0+6, x0+10, x0+14):
-                for k in range(0,4):
-                    p(rx+k%2, y0+12+k)
-        if kind == 'snow':
-            # Simple snow asterisks
-            for sx in (x0+6, x0+12, x0+16):
-                for dy in (-1,0,1):
-                    p(sx, y0+12+dy)
-                for dx in (-1,0,1):
-                    p(sx+dx, y0+12)
-        if kind == 'thunder':
-            # Bolt
-            for (dx, dy) in ((12,12),(11,13),(10,14),(13,14),(12,15)):
-                p(x0+dx, y0+dy)
+        bmp = WEATHER_ICONS.get(kind) or WEATHER_ICONS.get('cloudy')
+        if not bmp:
+            return
+        for yy, row in enumerate(bmp):
+            for xx, ch in enumerate(row[:ICON_SIZE]):
+                if ch == '1':
+                    off.SetPixel(x0 + xx, y0 + yy, *amber)
 
     # Content text
+    # Left column: current temp above the icon
     kind = weather['kind'] if weather else 'cloudy'
-    draw_icon(BOARD_MARGIN+2, CONTENT_Y, kind)
+    left_x = BOARD_MARGIN + 2
+    nowt = weather.get('now_temp') if weather else None
+    cur_temp = f"{nowt}°" if nowt is not None else "--°"
+    draw_text(left_x, CONTENT_Y, truncate(cur_temp, r.cols))
+    draw_icon(left_x, CONTENT_Y + CHAR_H + 2, kind)
 
-    # Right of icon, show temps and description
-    text_x = BOARD_MARGIN + 28
+    # Right column: Min/Max:, Wind, Real feel
+    text_x = left_x + ICON_SIZE + 8
     tmin = weather.get('tmin') if weather else None
     tmax = weather.get('tmax') if weather else None
-    nowt = weather.get('now_temp') if weather else None
-    desc_val = weather.get('desc') if weather else '--'
-    desc = desc_val if isinstance(desc_val, str) else '--'
-    top_line = ''
-    if tmin is not None and tmax is not None:
-        top_line = f"{tmin}°/{tmax}°"
-    elif nowt is not None:
-        top_line = f"{nowt}°"
-    else:
-        top_line = "--°/--°"
-    # Fit top line
-    top_line = truncate(top_line, max(0, r.cols - text_x - BOARD_MARGIN))
-    draw_text(text_x, CONTENT_Y, top_line)
-    # Second line: description + precip prob
-    pprob = weather.get('pprob') if weather else None
-    sec = desc
-    if isinstance(pprob, int):
-        sec = f"{sec} {pprob}%"
-    sec = truncate(sec, max(0, r.cols - text_x - BOARD_MARGIN))
-    draw_text(text_x, CONTENT_Y + CHAR_H + 3, sec)
-    # Third line: wind and feels-like
     wind = weather.get('wind') if weather else None
     app = weather.get('app_temp') if weather else None
-    third_parts = []
-    if wind is not None:
-        third_parts.append(f"Wind {wind}")
-    if app is not None:
-        third_parts.append(f"Gefühlt {app}°")
-    third = '  '.join(third_parts) if third_parts else ''
-    third = truncate(third, max(0, r.cols - text_x - BOARD_MARGIN))
-    draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), third)
+
+    line1 = f"Min/Max: {tmin if tmin is not None else '--'}°/{tmax if tmax is not None else '--'}°"
+    line2 = f"Wind {wind if wind is not None else '--'}" + (" km/h" if wind is not None else "")
+    line3 = f"Real feel {app if app is not None else '--'}°"
+
+    draw_text(text_x, CONTENT_Y, truncate(line1, max(0, r.cols - text_x - BOARD_MARGIN)))
+    draw_text(text_x, CONTENT_Y + CHAR_H + 3, truncate(line2, max(0, r.cols - text_x - BOARD_MARGIN)))
+    draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), truncate(line3, max(0, r.cols - text_x - BOARD_MARGIN)))
 
     return matrix.SwapOnVSync(off)
 
