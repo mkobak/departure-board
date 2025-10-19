@@ -101,6 +101,8 @@ class RotaryEncoder:
         self._last_clk_edge_time: float = 0.0
         # Button state for polling latch
         self._sw_last_level = None  # type: ignore[assignment]
+        # Current button press state (True when held). Used to suppress rotations during press.
+        self._button_down = False
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -141,6 +143,12 @@ class RotaryEncoder:
                     print(f"[RotaryEncoder] Initial CLK={clk0} DT={'n/a' if self._directionless else dt0} SW={sw0}")
                 except Exception:
                     pass
+            else:
+                try:
+                    sw0 = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
+                    self._button_down = (sw0 == 0)
+                except Exception:
+                    self._button_down = False
             if not self._force_polling:
                 try:
                     # Primary strategy: hardware event detection on CLK rising edge only
@@ -175,6 +183,9 @@ class RotaryEncoder:
                                     else:
                                         dt_state = GPIO.input(self.pin_dt) if self.pin_dt is not None else 1  # type: ignore[attr-defined]
                                         step = +1 if dt_state == 0 else -1
+                                    # Suppress rotation while button is held
+                                    if self._button_down:
+                                        step = 0
                                     self._movement += step
                                     if abs(self._movement) >= self._steps_per_detent:
                                         delta = 1 if self._movement > 0 else -1
@@ -206,6 +217,8 @@ class RotaryEncoder:
                                     sw_level = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
                                 except Exception:
                                     sw_level = 1
+                                # Track current press state for rotation suppression
+                                self._button_down = (sw_level == 0)
                                 nowp = time.time()
                                 if sw_level == 0:  # pressed (active low)
                                     if not sw_pressed:
@@ -244,6 +257,8 @@ class RotaryEncoder:
                         sw_level = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
                     except Exception:
                         sw_level = 1
+                    # Track button state globally
+                    self._button_down = (sw_level == 0)
                     nowp = time.time()
                     if self.on_button:
                         if sw_level == 0:
@@ -302,6 +317,9 @@ class RotaryEncoder:
         if not _HAVE_GPIO:
             return
         if self.on_rotate is None:
+            return
+        # Suppress rotation while button is held
+        if self._button_down:
             return
         # Edge-based: called on CLK rising due to event detector setup
         now = time.time()
