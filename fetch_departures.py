@@ -17,7 +17,7 @@ import argparse
 import re
 import unicodedata
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 import os
 import requests
@@ -66,7 +66,7 @@ def fetch_stationboard(
     station: str,
     limit: int = 8,
     transportations: Optional[List[str]] = None,
-    timeout: float = 10.0,
+    timeout: float | Tuple[float, float] = 10.0,
     verify: bool | str = True,
 ) -> List[Dict[str, Any]]:
     """Return a simplified list of upcoming departures for a station.
@@ -76,6 +76,8 @@ def fetch_stationboard(
       - Over-fetch from the API (limit + buffer) so after filtering out imminent
         departures (<3 mins) we can still present the desired number of rows.
       - Rows with mins < 3 are excluded.
+    timeout can be a single float (seconds) or a (connect, read) tuple forwarded
+    to requests.get for finer control during boot.
     """
     display_limit = limit
     fetch_buffer = max(10, int(display_limit * 2))

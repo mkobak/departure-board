@@ -594,11 +594,14 @@ def run_loop(opts: argparse.Namespace):
         # Increase fetch size if we need to filter for a specific destination to ensure enough matches
         base_fetch = opts.limit * 4
         fetch_size = max(base_fetch, 60) if screen.get('dest_filter') else base_fetch
+        # Use a short connect timeout and a moderate read timeout to avoid long stalls on boot
+        connect_timeout = min(1.0, max(0.2, timeout / 3.0))
+        read_timeout = max(2.5, timeout)
         rows = fd.fetch_stationboard(
             screen['origin'],
             fetch_size,
             transportations=screen.get('transportations'),
-            timeout=timeout,
+            timeout=(connect_timeout, read_timeout),
         )
         dest_filter = screen.get('dest_filter')
         if dest_filter:
@@ -701,7 +704,8 @@ def run_loop(opts: argparse.Namespace):
     # --- Initial fetch scheduling --------------------------------------------------
     schedule_fetch(0.0)  # fetch immediately on start
     next_periodic_refresh = time.time() + fetch_interval
-    fetch_backoff = 5.0  # quick retry when fetch fails at boot; increases up to 60s
+    process_start_time = time.time()
+    fetch_backoff = 1.0  # start very small on boot; ramp up with failures
     last_time_sync_state = time_is_synchronized()
     # Background fetch control
     fetch_in_flight = False
@@ -729,7 +733,12 @@ def run_loop(opts: argparse.Namespace):
             except Exception as e:  # noqa: BLE001
                 print(f"[fetch] Error fetching departures for '{screen_snapshot.get('header','?')}': {e}", file=sys.stderr)
                 # Quick retry with exponential backoff (cap 60s); also slightly increase timeout
-                fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
+                elapsed = time.time() - process_start_time
+                # During the first 20s after boot, keep retries snappy (<= 2s)
+                if elapsed < 20.0:
+                    fetch_backoff = min(2.0, max(0.5, fetch_backoff * 1.5))
+                else:
+                    fetch_backoff = min(60.0, max(2.0, fetch_backoff * 1.5))
                 current_fetch_timeout = min(10.0, current_fetch_timeout + 1.0)
                 schedule_fetch(fetch_backoff)
             finally:
@@ -741,6 +750,9 @@ def run_loop(opts: argparse.Namespace):
     # On very early boot, show real clock immediately in auto/skip modes; placeholder only in strict mode without sync
     initial_now = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
     offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=initial_now)  # blank first frame, clears stale panel content
+    # Kick off the first fetch immediately if clock is usable
+    if time_is_synchronized():
+        start_fetch()
 
     running = True
     def _sig_handler(signum, frame):  # noqa: D401, ANN001

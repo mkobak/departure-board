@@ -1,8 +1,7 @@
 [Unit]
 Description=LED Matrix Departure Board
-# Start early to clear any stale frame from previous boot; don't wait for full network
+# Start early to clear any stale frame from previous boot; don't wait for network-online
 After=network-pre.target
-Wants=network-online.target
 
 [Service]
 Type=simple
