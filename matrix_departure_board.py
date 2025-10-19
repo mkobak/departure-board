@@ -438,7 +438,10 @@ def run_loop(opts: argparse.Namespace):
     except StopIteration:
         current_index = 0
     active_screen = screens[current_index]
-    departures: List[Dict[str, Any]] = []          # last fetched departures for active screen
+    # Display rows currently shown (page slice) and the full fetched list for current screen
+    departures: List[Dict[str, Any]] = []          # current page slice to render
+    departures_all: List[Dict[str, Any]] = []      # full list from last fetch for current screen
+    page_toggle: int = 0                           # 0 = first 4, 1 = next 4
     last_fetch_time = 0.0                          # timestamp of last successful fetch
     next_scheduled_fetch = 0.0                     # when to fetch (rotation delay, periodic refresh)
     fetch_interval = max(15.0, float(opts.refresh))  # periodic refresh (>=15s)
@@ -446,6 +449,8 @@ def run_loop(opts: argparse.Namespace):
     encoder = None
     encoder_started_early = False
     last_rotation_accept = 0.0                     # debounce accepted rotation time
+    last_button_event = 0.0                        # last button press time (to guard rotations after click)
+    rotate_guard_after_button = 0.25               # seconds to ignore rotation after a click
     rotation_min_interval = float(getattr(opts, 'rotate_min_interval', 0.08))
 
     rotation_queue: List[int] = []                 # accumulate raw deltas (optional future use)
@@ -457,16 +462,21 @@ def run_loop(opts: argparse.Namespace):
             next_scheduled_fetch = t
 
     def _accept_rotation(direction: int):
-        nonlocal current_index, active_screen, departures
+        nonlocal current_index, active_screen, departures, departures_all, page_toggle
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
         active_screen = screens[current_index]
         # Blank departures immediately – display will show empty area for half second
         departures = []
+        departures_all = []
+        page_toggle = 0  # reset to first page on stop change
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
         nonlocal last_rotation_accept
         now = time.time()
+        # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
+        if (now - last_button_event) < rotate_guard_after_button:
+            return
         if now - last_rotation_accept < rotation_min_interval:
             return  # debounce / noise filter
         last_rotation_accept = now
@@ -474,6 +484,24 @@ def run_loop(opts: argparse.Namespace):
         if getattr(opts, 'encoder_debug', False):
             print(f"[encoder] detent delta={direction} at {now:.3f}", file=sys.stderr)
         _accept_rotation(direction)
+
+    def _update_display_rows_from_page():
+        nonlocal departures
+        start = page_toggle * opts.limit
+        end = start + opts.limit
+        departures = departures_all[start:end]
+
+    def _on_button():
+        """Toggle between first and next 4 departures for current stop."""
+        nonlocal page_toggle, last_button_event
+        last_button_event = time.time()
+        page_toggle = 0 if page_toggle == 1 else 1
+        if getattr(opts, 'encoder_debug', False):
+            print(f"[encoder] button press -> page {page_toggle}", file=sys.stderr)
+        # If we don't yet have enough rows for the second page, schedule a quick fetch
+        if page_toggle == 1 and len(departures_all) <= opts.limit:
+            schedule_fetch(0.0)
+        _update_display_rows_from_page()
 
     # Early encoder init (before RGBMatrix) if requested
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and getattr(opts, 'encoder_early', False):
@@ -489,6 +517,7 @@ def run_loop(opts: argparse.Namespace):
                 pin_dt=opts.enc_dt,
                 pin_sw=opts.enc_sw,
                 on_rotate=_on_rotate,
+                on_button=_on_button,
                 force_polling=opts.enc_poll,
                 debug=opts.encoder_debug,
                 steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
@@ -575,6 +604,7 @@ def run_loop(opts: argparse.Namespace):
                     pin_dt=opts.enc_dt,
                     pin_sw=opts.enc_sw,
                     on_rotate=_on_rotate,  # type: ignore[operator]
+                    on_button=_on_button,
                     force_polling=opts.enc_poll,
                     debug=opts.encoder_debug,
                     steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
@@ -624,7 +654,8 @@ def run_loop(opts: argparse.Namespace):
             nf_cli = fd._normalize(opts.dest)
             rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf_cli]
         rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
-        return rows[:opts.limit]
+        # Return enough rows for two pages
+        return rows[: max(opts.limit * 2, 8)]
 
     # Detect whether system time is synchronized; in 'auto' mode trust RTC/plausible clock
     _sync_cached: Optional[bool] = None
@@ -724,7 +755,8 @@ def run_loop(opts: argparse.Namespace):
                 rows_local = fetch_rows(screen_snapshot, timeout=current_fetch_timeout)
                 # Only apply if still on the same screen
                 if screen_snapshot is active_screen or screen_snapshot.get('header') == active_screen.get('header'):
-                    departures[:] = rows_local
+                    departures_all[:] = rows_local
+                    _update_display_rows_from_page()
                     last_fetch_time = time.time()
                     fetch_backoff = 5.0
                     next_periodic_refresh = last_fetch_time + fetch_interval
