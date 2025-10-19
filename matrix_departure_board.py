@@ -449,7 +449,9 @@ def run_loop(opts: argparse.Namespace):
     rotate_fetch_delay = max(0.05, getattr(opts, 'rotate_fetch_delay', 0.5))
     encoder = None
     encoder_started_early = False
-    last_rotation_accept = 0.0                     # debounce accepted rotation time
+    last_rotation_accept = 0.0                     # low-level debounce between pulses
+    last_rotation_action = 0.0                     # high-level action cooldown to merge bouncy pulses
+    rotation_action_cooldown = float(getattr(opts, 'rotate_action_cooldown', 0.3))
     last_button_event = 0.0                        # last button press time (to guard rotations after click)
     rotate_guard_after_button = 0.25               # seconds to ignore rotation after a click
     rotation_min_interval = float(getattr(opts, 'rotate_min_interval', 0.08))
@@ -474,13 +476,16 @@ def run_loop(opts: argparse.Namespace):
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
-        nonlocal last_rotation_accept, rotation_alternate
+        nonlocal last_rotation_accept, last_rotation_action, rotation_alternate
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
             return
         if now - last_rotation_accept < rotation_min_interval:
             return  # debounce / noise filter
+        # Coalesce multiple pulses from one physical twist
+        if now - last_rotation_action < rotation_action_cooldown:
+            return
         last_rotation_accept = now
         direction = 1 if raw_delta > 0 else -1
         if getattr(opts, 'encoder_debug', False):
@@ -491,6 +496,7 @@ def run_loop(opts: argparse.Namespace):
         else:
             _accept_rotation(direction)
         rotation_alternate = 1 - rotation_alternate
+        last_rotation_action = now
 
     def _update_display_rows_from_page():
         nonlocal departures
