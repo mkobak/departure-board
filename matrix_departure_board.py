@@ -465,14 +465,13 @@ def run_loop(opts: argparse.Namespace):
             next_scheduled_fetch = t
 
     def _accept_rotation(direction: int):
-        nonlocal current_index, active_screen, departures, departures_all, page_toggle, rotation_alternate
+        nonlocal current_index, active_screen, departures, departures_all, page_toggle
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
         active_screen = screens[current_index]
         # Blank departures immediately – display will show empty area for half second
         departures = []
         departures_all = []
         page_toggle = 0  # reset to first page on stop change
-        rotation_alternate = 0  # after arriving at a new stop, the first rotation toggles page again
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
