@@ -494,7 +494,11 @@ def run_loop(opts: argparse.Namespace):
     def _on_button():
         """Toggle between first and next 4 departures for current stop."""
         nonlocal page_toggle, last_button_event
-        last_button_event = time.time()
+        nowb = time.time()
+        # Additional guard to ignore accidental rapid repeats (<100ms)
+        if (nowb - last_button_event) < 0.1:
+            return
+        last_button_event = nowb
         page_toggle = 0 if page_toggle == 1 else 1
         if getattr(opts, 'encoder_debug', False):
             print(f"[encoder] button press -> page {page_toggle}", file=sys.stderr)

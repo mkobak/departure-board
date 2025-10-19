@@ -99,6 +99,8 @@ class RotaryEncoder:
         # Edge-based decoding state (prefer rising edge of CLK only)
         self._last_clk_level: Optional[int] = None
         self._last_clk_edge_time: float = 0.0
+        # Button state for polling latch
+        self._sw_last_level = None  # type: ignore[assignment]
 
     def start(self) -> None:
         if not _HAVE_GPIO:
@@ -196,16 +198,25 @@ class RotaryEncoder:
                                     except Exception:
                                         pass
                                     last_dbg = now
-                            # Simple button poll (active low)
+                            # Button polling with press-latch (active low). Trigger only on high->low transition.
                             if self.on_button:
-                                if GPIO.input(self.pin_sw) == 0:  # type: ignore[attr-defined]
-                                    now = time.time()
-                                    if now - self._last_button_time >= (self.button_debounce_ms / 1000.0):
-                                        self._last_button_time = now
+                                try:
+                                    sw_level = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
+                                except Exception:
+                                    sw_level = 1
+                                if self._sw_last_level is None:
+                                    self._sw_last_level = sw_level
+                                if self._sw_last_level == 1 and sw_level == 0:
+                                    nowp = time.time()
+                                    if nowp - self._last_button_time >= (self.button_debounce_ms / 1000.0):
+                                        self._last_button_time = nowp
                                         try:
+                                            if self._debug:
+                                                print("[RotaryEncoder] button FALLING (press)")
                                             self.on_button()
                                         except Exception:  # noqa: BLE001
                                             pass
+                                self._sw_last_level = sw_level
                             time.sleep(0.002)
                         except Exception:
                             time.sleep(0.01)
