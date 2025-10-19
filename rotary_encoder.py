@@ -160,9 +160,12 @@ class RotaryEncoder:
                 self._use_polling = True
                 def _poll():  # inner thread function
                     last_dbg = 0.0
-                    # Button latch state
-                    sw_pressed = False
-                    sw_low_since = 0.0
+                    # Debounce state for button (active low)
+                    debounce_s = max(0.015, min(0.05, self.button_debounce_ms / 1000.0))
+                    sw_raw_last = 1
+                    sw_raw_change_t = time.time()
+                    sw_debounced = 1
+                    sw_last_debounced = 1
                     while self._running:
                         try:
                             clk_state = GPIO.input(self.pin_clk)  # type: ignore[attr-defined]
@@ -183,7 +186,7 @@ class RotaryEncoder:
                                     else:
                                         dt_state = GPIO.input(self.pin_dt) if self.pin_dt is not None else 1  # type: ignore[attr-defined]
                                         step = +1 if dt_state == 0 else -1
-                                    # Suppress rotation while button is held
+                                    # Suppress rotation while button is debounced-held
                                     if self._button_down:
                                         step = 0
                                     self._movement += step
@@ -211,35 +214,33 @@ class RotaryEncoder:
                                     except Exception:
                                         pass
                                     last_dbg = now
-                            # Button polling with hold-to-confirm and latch (active low)
-                            if self.on_button:
-                                try:
-                                    sw_level = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
-                                except Exception:
-                                    sw_level = 1
-                                # Track current press state for rotation suppression
-                                self._button_down = (sw_level == 0)
-                                nowp = time.time()
-                                if sw_level == 0:  # pressed (active low)
-                                    if not sw_pressed:
-                                        if sw_low_since == 0.0:
-                                            sw_low_since = nowp
-                                        # require continuous low >= debounce_ms
-                                        if (nowp - sw_low_since) >= (self.button_debounce_ms / 1000.0):
-                                            # Debounce ok and not already pressed -> fire
-                                            if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
-                                                self._last_button_time = nowp
-                                                sw_pressed = True
-                                                try:
-                                                    if self._debug:
-                                                        print("[RotaryEncoder] button PRESS")
-                                                    self.on_button()
-                                                except Exception:  # noqa: BLE001
-                                                    pass
-                                else:
-                                    # released -> reset latch and timers
-                                    sw_pressed = False
-                                    sw_low_since = 0.0
+                            # Button polling with debounce-to-edge and latch (active low)
+                            try:
+                                sw_raw = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
+                            except Exception:
+                                sw_raw = 1
+                            nowp = time.time()
+                            if sw_raw != sw_raw_last:
+                                sw_raw_last = sw_raw
+                                sw_raw_change_t = nowp
+                            else:
+                                # If raw level stable for debounce window, accept it as debounced
+                                if (nowp - sw_raw_change_t) >= debounce_s:
+                                    sw_debounced = sw_raw
+                            if sw_debounced != sw_last_debounced:
+                                # Update button_down based on debounced level
+                                self._button_down = (sw_debounced == 0)
+                                if self.on_button and sw_last_debounced == 1 and sw_debounced == 0:
+                                    # Falling edge -> press
+                                    if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
+                                        self._last_button_time = nowp
+                                        try:
+                                            if self._debug:
+                                                print("[RotaryEncoder] button PRESS")
+                                            self.on_button()
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                                sw_last_debounced = sw_debounced
                             time.sleep(0.002)
                         except Exception:
                             time.sleep(0.01)
@@ -250,34 +251,35 @@ class RotaryEncoder:
             # Event-detection mode for rotation: also run a lightweight button polling thread
             self._running = True
             def _btn_poll():
-                sw_pressed = False
-                sw_low_since = 0.0
+                debounce_s = max(0.015, min(0.05, self.button_debounce_ms / 1000.0))
+                sw_raw_last = 1
+                sw_raw_change_t = time.time()
+                sw_debounced = 1
+                sw_last_debounced = 1
                 while self._running:
                     try:
                         sw_level = GPIO.input(self.pin_sw)  # type: ignore[attr-defined]
                     except Exception:
                         sw_level = 1
-                    # Track button state globally
-                    self._button_down = (sw_level == 0)
                     nowp = time.time()
-                    if self.on_button:
-                        if sw_level == 0:
-                            if not sw_pressed:
-                                if sw_low_since == 0.0:
-                                    sw_low_since = nowp
-                                if (nowp - sw_low_since) >= (self.button_debounce_ms / 1000.0):
-                                    if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
-                                        self._last_button_time = nowp
-                                        sw_pressed = True
-                                        try:
-                                            if self._debug:
-                                                print("[RotaryEncoder] button PRESS (event mode)")
-                                            self.on_button()
-                                        except Exception:  # noqa: BLE001
-                                            pass
-                        else:
-                            sw_pressed = False
-                            sw_low_since = 0.0
+                    if sw_level != sw_raw_last:
+                        sw_raw_last = sw_level
+                        sw_raw_change_t = nowp
+                    else:
+                        if (nowp - sw_raw_change_t) >= debounce_s:
+                            sw_debounced = sw_level
+                    if sw_debounced != sw_last_debounced:
+                        self._button_down = (sw_debounced == 0)
+                        if self.on_button and sw_last_debounced == 1 and sw_debounced == 0:
+                            if (nowp - self._last_button_time) >= (self.button_debounce_ms / 1000.0):
+                                self._last_button_time = nowp
+                                try:
+                                    if self._debug:
+                                        print("[RotaryEncoder] button PRESS (event mode)")
+                                    self.on_button()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        sw_last_debounced = sw_debounced
                     time.sleep(0.003)
             self._poll_thread = threading.Thread(target=_btn_poll, daemon=True)
             self._poll_thread.start()
