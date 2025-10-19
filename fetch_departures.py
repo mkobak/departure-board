@@ -125,8 +125,10 @@ def fetch_stationboard(
             "plat": plat,
         })
     rows = [r for r in rows if r["mins"] >= 3]
-    # Sort by planned + delay (requirement: order by sum of planned + delay)
-    rows.sort(key=lambda r: (r.get("mins", 0) + (r.get("delay") or 0)))
+    # Sort by actual minutes-to-departure. 'mins' is computed from prognosis/departure,
+    # which already reflects delays when prognosis is present. Sorting by 'mins' avoids
+    # inversions like 4' appearing below 5' when a separate 'delay' is added to the key.
+    rows.sort(key=lambda r: r.get("mins", 0))
     return rows
 
 

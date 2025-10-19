@@ -400,7 +400,8 @@ def run_loop(opts: argparse.Namespace):
             if opts.dest:
                 nf = fd._normalize(opts.dest)
                 rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf]
-            rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
+            # Sort strictly by current minutes-to-departure to avoid inversions
+            rows.sort(key=lambda r: r.get('mins', 0))
             rows = rows[:opts.limit]
             for r in rows:
                 print(fd.format_departure(r, opts.stop))
@@ -640,8 +641,8 @@ def run_loop(opts: argparse.Namespace):
 
     # Fetch helper
     def fetch_rows(screen: Dict[str, Any], timeout: float = 10.0) -> List[Dict[str, Any]]:
-        # Increase fetch size if we need to filter for a specific destination to ensure enough matches
-        base_fetch = opts.limit * 4
+        # Increase fetch size to ensure enough items for two pages even after filtering
+        base_fetch = max(opts.limit * 6, 40)
         fetch_size = max(base_fetch, 60) if screen.get('dest_filter') else base_fetch
         # Use a short connect timeout and a moderate read timeout to avoid long stalls on boot
         connect_timeout = min(1.0, max(0.2, timeout / 3.0))
@@ -672,9 +673,10 @@ def run_loop(opts: argparse.Namespace):
         if getattr(opts, 'dest', ''):
             nf_cli = fd._normalize(opts.dest)
             rows = [r for r in rows if fd._normalize(r.get('dest') or '') == nf_cli]
-        rows.sort(key=lambda r: (r.get('mins',0) + (r.get('delay') or 0)))
-        # Return enough rows for two pages
-        return rows[: max(opts.limit * 2, 8)]
+        # Sort strictly by minutes-to-departure for stable ordering across pages
+        rows.sort(key=lambda r: r.get('mins', 0))
+        # Return enough rows for two pages (and a small safety buffer)
+        return rows[: max(int(opts.limit * 2.5), 10)]
 
     # Detect whether system time is synchronized; in 'auto' mode trust RTC/plausible clock
     _sync_cached: Optional[bool] = None
