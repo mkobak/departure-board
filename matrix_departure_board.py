@@ -443,6 +443,7 @@ def run_loop(opts: argparse.Namespace):
     departures: List[Dict[str, Any]] = []          # current page slice to render
     departures_all: List[Dict[str, Any]] = []      # full list from last fetch for current screen
     page_toggle: int = 0                           # 0 = first 4, 1 = next 4
+    force_first_page: bool = False                 # after a stop change, hold page 0 until next rotation
     rotation_alternate: int = 0                    # 0 => next rotation toggles page; 1 => next rotation changes stop
     last_fetch_time = 0.0                          # timestamp of last successful fetch
     next_scheduled_fetch = 0.0                     # when to fetch (rotation delay, periodic refresh)
@@ -466,13 +467,14 @@ def run_loop(opts: argparse.Namespace):
             next_scheduled_fetch = t
 
     def _accept_rotation(direction: int):
-        nonlocal current_index, active_screen, departures, departures_all, page_toggle
+        nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
         active_screen = screens[current_index]
         # Blank departures immediately – display will show empty area for half second
         departures = []
         departures_all = []
         page_toggle = 0  # reset to first page on stop change
+        force_first_page = True  # ensure the new stop displays page 0 until next rotation
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
@@ -500,12 +502,16 @@ def run_loop(opts: argparse.Namespace):
 
     def _update_display_rows_from_page():
         nonlocal departures
-        start = page_toggle * opts.limit
+        effective_page = 0 if force_first_page else page_toggle
+        start = effective_page * opts.limit
         end = start + opts.limit
         departures = departures_all[start:end]
 
     def _toggle_page():
-        nonlocal page_toggle
+        nonlocal page_toggle, force_first_page
+        # Once user toggles, we no longer force page 0
+        if force_first_page:
+            force_first_page = False
         page_toggle = 0 if page_toggle == 1 else 1
         if getattr(opts, 'encoder_debug', False):
             print(f"[encoder] page toggle -> page {page_toggle}", file=sys.stderr)
