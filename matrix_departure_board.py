@@ -173,7 +173,7 @@ ADV_WIDTH = {
     'I': 3,
     'L': 4,
 }
-DESCENDERS = {'p','g','q','y','j','f'}
+DESCENDERS = {'p','g','q','y','j'}
 
 # Board size defaults (can override with CLI)
 DEFAULT_ROWS = 64
