@@ -4,8 +4,8 @@
 Run this on the Pi to see raw edge events and debounced button presses.
 
 Examples:
-  sudo python3 encoder_debug.py --clk 7 --dt 9 --sw 11
-  sudo python3 encoder_debug.py --clk 7 --sw 11 --no-dt
+  sudo python3 encoder_debug.py --clk 10 --dt 9 --sw 11
+  sudo python3 encoder_debug.py --clk 10 --sw 11 --no-dt
 
 Notes:
 - Uses internal pull-ups by default (typical wiring: SW/CLK/DT -> GPIOs, other side to GND).
@@ -33,7 +33,7 @@ def ts() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Rotary encoder debug console")
-    ap.add_argument('--clk', type=int, default=7, help='BCM pin for CLK (A)')
+    ap.add_argument('--clk', type=int, default=10, help='BCM pin for CLK (A)')
     ap.add_argument('--dt', type=int, default=9, help='BCM pin for DT (B)')
     ap.add_argument('--sw', type=int, default=11, help='BCM pin for SW (button)')
     ap.add_argument('--no-dt', action='store_true', help='Ignore DT (directionless)')

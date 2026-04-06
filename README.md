@@ -151,20 +151,22 @@ A rotary encoder can cycle among predefined stops (default list includes `Basel,
 
 ### Default GPIOs (BCM numbering)
 
+All 5 pins are consecutive on the **left column** of the header (odd-numbered pins 17–25):
+
 | Function | GPIO | Header Pin | Notes |
 |----------|------|------------|-------|
-| CLK (A)  | 7    | 26         | Directionless counting (rising edge) |
-| DT (B)   | 9    | 21         | Optional; only used if directional mode later enabled |
-| SW (btn) | 11   | 23         | Currently also emits pulses if miswired; short press reserved for future | 
-| VCC      | 3V3  | 1 / 17     | Use 3.3V only |
-| GND      | GND  | any GND    | Common ground |
+| VCC (+)  | 3V3  | 17         | Use 3.3V only |
+| CLK (A)  | 10   | 19         | Rotation phase A |
+| DT (B)   | 9    | 21         | Rotation phase B (determines direction) |
+| SW (btn) | 11   | 23         | Push button: toggles departure page |
+| GND      | GND  | 25         | Ground |
 
-If you only wire CLK and SW (no DT), rotation still works because directionless mode is the default. Every valid detent = +1.
+Directional mode is enabled by default: CW = next stop, CCW = previous stop, button press = toggle page.
 
 ### Changing pins
 Use CLI flags `--enc-clk`, `--enc-dt`, `--enc-sw`. Example:
 ```bash
-sudo .venv/bin/python matrix_departure_board.py --stop "Basel, Aeschenplatz" --enc-clk 7 --enc-dt 9 --enc-sw 11
+sudo .venv/bin/python matrix_departure_board.py --stop "Basel, Aeschenplatz" --enc-clk 10 --enc-dt 9 --enc-sw 11
 ```
 
 ### Polling vs interrupts
@@ -178,7 +180,7 @@ Pass `--enc-poll` if interrupts fail or you need deterministic polling (the serv
 python - <<'PY'
 from rotary_encoder import RotaryEncoder
 import time
-e = RotaryEncoder(on_rotate=lambda d: print('delta', d), pin_clk=7, pin_dt=9, pin_sw=11)
+e = RotaryEncoder(on_rotate=lambda d: print('delta', d), on_button=lambda: print('button!'), pin_clk=10, pin_dt=9, pin_sw=11, directionless=False)
 e.start()
 print('Rotate now (Ctrl+C to exit)')
 try:
@@ -196,7 +198,7 @@ The provided `departure-board.service` now includes the encoder defaults and ear
 ```
 ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py \
 	--stop "Basel, Aeschenplatz" --limit 4 --brightness 40 --gpio-mapping adafruit-hat \
-	--encoder-early --encoder-delay 0.05 --enc-clk 7 --enc-dt 9 --enc-sw 11 \
+	--encoder-early --encoder-delay 0.05 --enc-clk 10 --enc-dt 9 --enc-sw 11 \
 	--enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5
 ```
 Enable at boot (after copying service file to `/etc/systemd/system/`):

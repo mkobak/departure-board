@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Simple rotary encoder interface for Raspberry Pi.
 
-Hardware (pins per user wiring):
+Hardware (pins per user wiring – all on left column of header):
     CLK (A phase)  -> GPIO10 (BOARD pin 19)
-    DT  (B phase)  -> (optional) GPIO9 (BOARD pin 21)
-    SW  (switch)   -> GPIO7  (BOARD pin 26)
+    DT  (B phase)  -> GPIO9  (BOARD pin 21)
+    SW  (switch)   -> GPIO11 (BOARD pin 23)
   VCC -> 3V3 (pin 17)  IMPORTANT: use 3.3V, not 5V
-  GND -> any ground (pin 20)
+  GND -> GND (pin 25)
 
 Design goals:
 - Lightweight, no external deps besides RPi.GPIO (preferred minimal install) or fallback to gpiozero.
@@ -50,9 +50,9 @@ except Exception:  # noqa: BLE001
 class RotaryEncoder:
     def __init__(
         self,
-        pin_clk: int = 7,   # Updated project default (working setup)
-        pin_dt: Optional[int] = 9,  # Optional; keeps direction data if wired
-        pin_sw: int = 11,  # Updated project default push button
+        pin_clk: int = 10,  # GPIO10 = BOARD pin 19 (left column)
+        pin_dt: Optional[int] = 9,  # GPIO9  = BOARD pin 21 (left column)
+        pin_sw: int = 11,  # GPIO11 = BOARD pin 23 (left column)
         on_rotate: Optional[Callable[[int], None]] = None,
         on_button: Optional[Callable[[], None]] = None,
         debounce_ms: int = 4,

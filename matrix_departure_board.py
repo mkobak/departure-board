@@ -678,7 +678,7 @@ def run_loop(opts: argparse.Namespace):
     departures_all: List[Dict[str, Any]] = []      # full list from last fetch for current screen
     page_toggle: int = 0                           # 0 = first 4, 1 = next 4
     force_first_page: bool = False                 # after a stop change, hold page 0 until next rotation
-    rotation_alternate: int = 0                    # 0 => next rotation toggles page; 1 => next rotation changes stop
+    rotation_alternate: int = 0                    # (legacy, unused with directional mode)
     last_fetch_time = 0.0                          # timestamp of last successful fetch
     next_scheduled_fetch = 0.0                     # when to fetch (rotation delay, periodic refresh)
     fetch_interval = max(15.0, float(opts.refresh))  # periodic refresh (>=15s)
@@ -716,7 +716,7 @@ def run_loop(opts: argparse.Namespace):
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
-        nonlocal last_rotation_accept, last_rotation_action, rotation_alternate
+        nonlocal last_rotation_accept, last_rotation_action
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -729,13 +729,9 @@ def run_loop(opts: argparse.Namespace):
         last_rotation_accept = now
         direction = 1 if raw_delta > 0 else -1
         if getattr(opts, 'encoder_debug', False):
-            print(f"[encoder] detent delta={direction} at {now:.3f} alt={rotation_alternate}", file=sys.stderr)
-        # Alternate: first rotation toggles page, next rotation changes stop
-        if rotation_alternate == 0:
-            _toggle_page()
-        else:
-            _accept_rotation(direction)
-        rotation_alternate = 1 - rotation_alternate
+            print(f"[encoder] detent delta={direction} at {now:.3f}", file=sys.stderr)
+        # Directional: CW (+1) = next stop, CCW (-1) = previous stop
+        _accept_rotation(direction)
         last_rotation_action = now
 
     def _update_display_rows_from_page():
@@ -785,6 +781,7 @@ def run_loop(opts: argparse.Namespace):
                 force_polling=opts.enc_poll,
                 debug=opts.encoder_debug,
                 steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
+                directionless=False,
             )
             encoder.start()
             encoder_started_early = True
@@ -872,6 +869,7 @@ def run_loop(opts: argparse.Namespace):
                     force_polling=opts.enc_poll,
                     debug=opts.encoder_debug,
                     steps_per_detent=max(1, int(getattr(opts, 'enc_steps_per_detent', 2))),
+                    directionless=False,
                 )
                 encoder.start()
                 print("Rotary encoder active (events or polling)", file=sys.stderr)
@@ -1169,7 +1167,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Disable HAT hardware pulsing; may help on some clones at the cost of CPU')
     # Rotary encoder options
     p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
-    p.add_argument('--enc-clk', type=int, default=7, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
+    p.add_argument('--enc-clk', type=int, default=10, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
     p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering, optional)')
     p.add_argument('--enc-sw', type=int, default=11, help='Rotary encoder switch GPIO (BCM numbering)')
     p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
