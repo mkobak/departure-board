@@ -693,6 +693,8 @@ def run_loop(opts: argparse.Namespace):
     rotation_min_interval = float(getattr(opts, 'rotate_min_interval', 0.08))
 
     rotation_queue: List[int] = []                 # accumulate raw deltas (optional future use)
+    display_dirty: bool = True                       # redraw only when content changes
+    last_rendered_minute: str = ''                   # track clock minute to detect changes
 
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
@@ -705,7 +707,7 @@ def run_loop(opts: argparse.Namespace):
     # keys -> {'data': WeatherData|None, 'ts': float}
 
     def _accept_rotation(direction: int):
-        nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page
+        nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
         active_screen = screens[current_index]
         # Blank departures immediately – display will show empty area for half second
@@ -713,6 +715,7 @@ def run_loop(opts: argparse.Namespace):
         departures_all = []
         page_toggle = 0  # reset to first page on stop change
         force_first_page = True  # ensure the new stop displays page 0 until next rotation
+        display_dirty = True
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
@@ -735,11 +738,12 @@ def run_loop(opts: argparse.Namespace):
         last_rotation_action = now
 
     def _update_display_rows_from_page():
-        nonlocal departures
+        nonlocal departures, display_dirty
         effective_page = 0 if force_first_page else page_toggle
         start = effective_page * opts.limit
         end = start + opts.limit
         departures = departures_all[start:end]
+        display_dirty = True
 
     def _toggle_page():
         nonlocal page_toggle, force_first_page
@@ -1016,7 +1020,7 @@ def run_loop(opts: argparse.Namespace):
         screen_snapshot = dict(active_screen)
         fetch_in_flight = True
         def _worker():
-            nonlocal fetch_in_flight, departures, last_fetch_time, fetch_backoff, next_periodic_refresh, current_fetch_timeout
+            nonlocal fetch_in_flight, departures, last_fetch_time, fetch_backoff, next_periodic_refresh, current_fetch_timeout, display_dirty
             try:
                 if screen_snapshot.get('type') == 'weather':
                     # Fetch and cache weather
@@ -1024,6 +1028,7 @@ def run_loop(opts: argparse.Namespace):
                     try:
                         w_new = fetch_weather_for_screen(screen_snapshot)
                         weather_cache[key] = {'data': w_new, 'ts': time.time()}
+                        display_dirty = True
                     except Exception as we:  # noqa: BLE001
                         print(f"[weather] fetch error for {key}: {we}", file=sys.stderr)
                     # Keep departures untouched
@@ -1072,14 +1077,14 @@ def run_loop(opts: argparse.Namespace):
     signal.signal(signal.SIGTERM, _sig_handler)
 
     try:
-        # Fixed render cadence in seconds (helps avoid visible beating with PWM/refresh)
-        render_interval = 1.0 / 30.0  # ~30 FPS is plenty for static text
-        next_render = time.time()
+        # Dirty-flag rendering: only redraw when content actually changes.
+        # The rpi-rgb-led-matrix library continuously refreshes the last-swapped
+        # buffer via DMA, so skipping redraws does NOT make the panel go dark.
+        poll_interval = 0.05  # 50ms poll — responsive enough for encoder + clock
         while running:
             now = time.time()
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
-                # If system time isn't synced yet (strict mode), don't fetch; retry soon
                 if not time_is_synchronized():
                     schedule_fetch(min(5.0, fetch_backoff))
                     last_time_sync_state = False
@@ -1091,16 +1096,18 @@ def run_loop(opts: argparse.Namespace):
             if departures and now >= next_periodic_refresh and not fetch_in_flight:
                 schedule_fetch(0.0)
                 next_periodic_refresh = now + fetch_interval
-            # Redraw at a fixed cadence. In strict mode before sync, render placeholder clock.
-            if now >= next_render:
-                now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
+            # Check if the clock minute changed (triggers redraw for header time)
+            now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
+            current_minute = now_txt_override or datetime.now().strftime('%H:%M')
+            if current_minute != last_rendered_minute:
+                display_dirty = True
+            # Only redraw when something changed
+            if display_dirty:
                 if active_screen.get('type') == 'weather':
                     key = f"{active_screen['city']}"
                     w_entry = weather_cache.get(key)
-                    # Refresh weather every 10 minutes
                     w_data = w_entry['data'] if (w_entry and (now - w_entry['ts'] < 600)) else None
                     if w_data is None and not fetch_in_flight and time_is_synchronized():
-                        # Opportunistic refresh outside scheduled fetch
                         try:
                             w_new = fetch_weather_for_screen(active_screen)
                             weather_cache[key] = {'data': w_new, 'ts': time.time()}
@@ -1110,17 +1117,14 @@ def run_loop(opts: argparse.Namespace):
                     offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override)
                 else:
                     offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
-                next_render += render_interval
-                # Avoid drift if we fall behind
-                if next_render < now:
-                    next_render = now + render_interval
+                last_rendered_minute = current_minute
+                display_dirty = False
             # If time just became synchronized and we have no departures yet, force a fetch asap
             if (now_txt_override is None) and not departures and not next_scheduled_fetch and not fetch_in_flight:
                 schedule_fetch(0.0)
-            # Sleep until the next interesting event (render tick or scheduled fetch)
-            t_until_render = max(0.0, next_render - time.time())
+            # Sleep until the next interesting event
             t_until_fetch = max(0.0, (next_scheduled_fetch - time.time()) if next_scheduled_fetch else 1.0)
-            time.sleep(min(t_until_render, t_until_fetch, 0.05))
+            time.sleep(min(t_until_fetch, poll_interval))
     finally:
         if encoder:
             try:
