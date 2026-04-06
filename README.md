@@ -151,17 +151,18 @@ A rotary encoder can cycle among predefined stops (default list includes `Basel,
 
 ### Default GPIOs (BCM numbering)
 
-All 5 pins are consecutive on the **left column** of the header (odd-numbered pins 17–25):
+All 5 pins on the **LEFT column** (odd-numbered pins 17–25). Be careful not to clip to the adjacent right column (even pins)!
 
-| Function | GPIO | Header Pin | Notes |
-|----------|------|------------|-------|
-| VCC (+)  | 3V3  | 17         | Use 3.3V only |
-| CLK (A)  | 10   | 19         | Rotation phase A |
-| DT (B)   | 9    | 21         | Rotation phase B (determines direction) |
-| SW (btn) | 11   | 23         | Push button: toggles departure page |
-| GND      | GND  | 25         | Ground |
+| Function | GPIO | Header Pin | Column | Notes |
+|----------|------|------------|--------|-------|
+| VCC (+)  | 3V3  | 17         | Left   | Use 3.3V only |
+| CLK (A)  | 10   | 19         | Left   | Rotation phase A |
+| DT (B)   | 9    | 21         | Left   | Rotation phase B (determines direction) |
+| SW (btn) | 11   | 23         | Left   | Push button: toggles departure page |
+| GND      | GND  | 25         | Left   | Ground |
 
-Directional mode is enabled by default: CW = next stop, CCW = previous stop, button press = toggle page.
+Direction uses CLK rising edge: DT=LOW → CW (+1), DT=HIGH → CCW (-1).
+CW = next stop, CCW = previous stop, button press = toggle departure page.
 
 ### Changing pins
 Use CLI flags `--enc-clk`, `--enc-dt`, `--enc-sw`. Example:

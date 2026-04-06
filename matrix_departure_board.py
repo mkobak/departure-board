@@ -852,7 +852,7 @@ def run_loop(opts: argparse.Namespace):
             time.sleep(0.25 if opts.encoder_delay is None else opts.encoder_delay)
             try:
                 # Many pins are used by the RGB matrix HAT. Avoid common conflicts.
-                conflict_pins = {4,5,6,12,13,16,18,19,20,21,22,23,24,25,26,27}
+                conflict_pins = {4,5,6,12,13,16,17,18,19,20,21,22,23,24,25,26,27}
                 user_pins = {opts.enc_clk, opts.enc_dt, opts.enc_sw}
                 if conflict_pins & user_pins:
                     print(f"[encoder] Warning: chosen pins {user_pins & conflict_pins} likely conflict with the RGB matrix HAT. Try different GPIOs (e.g., 7, 14, 15) and reboot.", file=sys.stderr)
@@ -1168,7 +1168,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     # Rotary encoder options
     p.add_argument('--no-encoder', action='store_true', help='Disable rotary encoder even if library present')
     p.add_argument('--enc-clk', type=int, default=10, help='Rotary encoder CLK (A) GPIO (BCM numbering)')
-    p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering, optional)')
+    p.add_argument('--enc-dt', type=int, default=9, help='Rotary encoder DT (B) GPIO (BCM numbering)')
     p.add_argument('--enc-sw', type=int, default=11, help='Rotary encoder switch GPIO (BCM numbering)')
     p.add_argument('--enc-poll', action='store_true', help='Force polling mode instead of interrupt events')
     p.add_argument('--encoder-early', action='store_true', help='Initialize rotary encoder before RGBMatrix (try if normal init fails)')

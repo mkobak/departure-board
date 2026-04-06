@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Simple rotary encoder interface for Raspberry Pi.
 
-Hardware (pins per user wiring – all on left column of header):
+Hardware – all on LEFT column of header (odd-numbered pins 17–25):
+    VCC (+)        -> 3V3    (BOARD pin 17)  IMPORTANT: use 3.3V, not 5V
     CLK (A phase)  -> GPIO10 (BOARD pin 19)
     DT  (B phase)  -> GPIO9  (BOARD pin 21)
     SW  (switch)   -> GPIO11 (BOARD pin 23)
-  VCC -> 3V3 (pin 17)  IMPORTANT: use 3.3V, not 5V
-  GND -> GND (pin 25)
+    GND            -> GND    (BOARD pin 25)
+
+IMPORTANT: The right column (even pins 18–26) is directly adjacent.
+Verify clips are on the LEFT (odd) column, not the right (even) column.
+
+Direction detection uses CLK RISING edge + DT sample:
+    DT=LOW  at CLK rising -> CW (+1)
+    DT=HIGH at CLK rising -> CCW (-1)
 
 Design goals:
 - Lightweight, no external deps besides RPi.GPIO (preferred minimal install) or fallback to gpiozero.
@@ -51,7 +58,7 @@ class RotaryEncoder:
     def __init__(
         self,
         pin_clk: int = 10,  # GPIO10 = BOARD pin 19 (left column)
-        pin_dt: Optional[int] = 9,  # GPIO9  = BOARD pin 21 (left column)
+        pin_dt: Optional[int] = 9,   # GPIO9  = BOARD pin 21 (left column)
         pin_sw: int = 11,  # GPIO11 = BOARD pin 23 (left column)
         on_rotate: Optional[Callable[[int], None]] = None,
         on_button: Optional[Callable[[], None]] = None,
@@ -155,7 +162,7 @@ class RotaryEncoder:
                     self._sw_idle_level = 1
             if not self._force_polling:
                 try:
-                    # Primary strategy: hardware event detection on CLK rising edge only
+                    # Primary strategy: hardware event detection on CLK rising edge
                     GPIO.add_event_detect(self.pin_clk, GPIO.RISING, callback=self._clk_callback, bouncetime=self.debounce_ms)  # type: ignore[attr-defined]
                 except RuntimeError:
                     # Fallback to polling if event detection not possible
@@ -327,6 +334,7 @@ class RotaryEncoder:
         if self._button_down:
             return
         # Edge-based: called on CLK rising due to event detector setup
+        # Direction: DT=LOW at CLK rising → CW (+1), DT=HIGH → CCW (-1)
         now = time.time()
         if (now - self._last_clk_edge_time) < (self.debounce_ms / 1000.0):
             return
