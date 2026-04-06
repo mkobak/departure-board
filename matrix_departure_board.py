@@ -616,6 +616,39 @@ def draw_weather_frame(off, matrix: RGBMatrix, renderer: Renderer, header_text: 
     return matrix.SwapOnVSync(off)
 
 
+def draw_screensaver_frame(off, matrix: RGBMatrix, renderer: Renderer, now_text: Optional[str] = None):  # type: ignore[name-defined]
+    """Draw a minimal screensaver: just the current time centered on the panel."""
+    off.Fill(0, 0, 0)
+    amber = (255, 140, 0)
+    r = renderer
+
+    now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
+
+    def glyph_width(ch: str) -> int:
+        return r.glyph_width(ch)
+
+    def draw_glyph(x: int, y: int, ch: str):
+        bmp = BITMAP.get(ch, BITMAP[' '])
+        whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
+        for dy, brow in enumerate(bmp):
+            for dx, bit in enumerate(brow[:glyph_width(ch)]):
+                if bit:
+                    off.SetPixel(x+dx, y+dy+whole_offset, *amber)
+
+    # Center the time on the panel
+    time_w = r.measure(now_txt)
+    x = (r.cols - time_w) // 2
+    y = (r.rows - CHAR_H) // 2
+    cur = x
+    for i, ch in enumerate(now_txt):
+        draw_glyph(cur, y, ch)
+        cur += glyph_width(ch)
+        if i != len(now_txt) - 1:
+            cur += CHAR_SPACING
+
+    return matrix.SwapOnVSync(off)
+
+
 def run_loop(opts: argparse.Namespace):
     if not MATRIX_AVAILABLE:
         print("rgbmatrix library not available. Falling back to plain text output (developer mode).", file=sys.stderr)
@@ -695,6 +728,11 @@ def run_loop(opts: argparse.Namespace):
     rotation_queue: List[int] = []                 # accumulate raw deltas (optional future use)
     display_dirty: bool = True                       # redraw only when content changes
     last_rendered_minute: str = ''                   # track clock minute to detect changes
+    screensaver_active: bool = False                 # whether screensaver is currently on
+    last_interaction: float = time.time()            # last button/rotation time for screensaver timeout
+    screensaver_timeout: float = float(getattr(opts, 'screensaver_timeout', 600))  # seconds of inactivity
+    screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 15))  # dim brightness
+    normal_brightness: int = opts.brightness         # remember the normal brightness
 
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
@@ -705,6 +743,16 @@ def run_loop(opts: argparse.Namespace):
     # Weather cache
     weather_cache: Dict[str, Dict[str, Any]] = {}
     # keys -> {'data': WeatherData|None, 'ts': float}
+
+    def _wake_from_screensaver():
+        """Wake from screensaver without performing any action."""
+        nonlocal screensaver_active, last_interaction, display_dirty
+        last_interaction = time.time()
+        if screensaver_active:
+            screensaver_active = False
+            matrix.brightness = normal_brightness
+            display_dirty = True
+            schedule_fetch(0.0)  # refresh departures immediately on wake
 
     def _accept_rotation(direction: int):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty
@@ -730,6 +778,11 @@ def run_loop(opts: argparse.Namespace):
         if now - last_rotation_action < rotation_action_cooldown:
             return
         last_rotation_accept = now
+        if screensaver_active:
+            _wake_from_screensaver()
+            last_rotation_action = now
+            return
+        _wake_from_screensaver()  # reset inactivity timer
         direction = 1 if raw_delta > 0 else -1
         if getattr(opts, 'encoder_debug', False):
             print(f"[encoder] detent delta={direction} at {now:.3f}", file=sys.stderr)
@@ -758,13 +811,17 @@ def run_loop(opts: argparse.Namespace):
         _update_display_rows_from_page()
 
     def _on_button():
-        """Toggle between first and next 4 departures for current stop."""
+        """Toggle between first and next 4 departures for current stop, or wake from screensaver."""
         nonlocal page_toggle, last_button_event
         nowb = time.time()
         # Additional guard to ignore accidental rapid repeats (<100ms)
         if (nowb - last_button_event) < 0.1:
             return
         last_button_event = nowb
+        if screensaver_active:
+            _wake_from_screensaver()
+            return
+        _wake_from_screensaver()  # reset inactivity timer
         _toggle_page()
 
     # Early encoder init (before RGBMatrix) if requested
@@ -1083,6 +1140,25 @@ def run_loop(opts: argparse.Namespace):
         poll_interval = 0.05  # 50ms poll — responsive enough for encoder + clock
         while running:
             now = time.time()
+            # --- Screensaver activation check ---
+            if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
+                screensaver_active = True
+                matrix.brightness = screensaver_brightness
+                display_dirty = True
+                last_rendered_minute = ''  # force redraw
+            # --- Screensaver mode: just show the time ---
+            if screensaver_active:
+                now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
+                current_minute = now_txt_override or datetime.now().strftime('%H:%M')
+                if current_minute != last_rendered_minute:
+                    display_dirty = True
+                if display_dirty:
+                    offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override)
+                    last_rendered_minute = current_minute
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
+            # --- Normal mode ---
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
                 if not time_is_synchronized():
@@ -1186,6 +1262,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Steps per detent: 1 for directionless (CLK only), 2/4 if using full quadrature')
     p.add_argument('--ntp-wait-mode', choices=['auto','strict','skip'], default='auto',
                    help="Time sync strategy at boot: 'auto' (default) trusts RTC or plausible clock, 'strict' waits for NTP, 'skip' never waits")
+    # Screensaver options
+    p.add_argument('--screensaver-timeout', type=int, default=600,
+                   help='Seconds of inactivity before screensaver activates (0 to disable, default 600 = 10min)')
+    p.add_argument('--screensaver-brightness', type=int, default=15,
+                   help='Panel brightness during screensaver (0-100, default 15)')
     return p.parse_args(argv)
 
 
