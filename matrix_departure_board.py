@@ -630,11 +630,17 @@ def screensaver_random_pos(renderer: 'Renderer', now_txt: str) -> Tuple[int, int
 def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None, dim: int = 60):  # type: ignore[name-defined]
     """Draw a minimal screensaver: just the current time at the given position (or centered).
 
-    dim: apparent brightness 0-100, applied by scaling pixel color values directly so
-         matrix.brightness is never touched (avoids hardware reset side-effects).
+    dim: apparent brightness 0-100 as a fraction of the panel's full output at the current
+         hardware brightness. Pixel values are scaled to compensate so that dim=40 means
+         40% of maximum visible brightness, not 40% of 255 further attenuated by hardware.
+         matrix.brightness is never changed (avoids hardware reset side-effects).
     """
     off.Fill(0, 0, 0)
-    scale = max(0, min(100, dim)) / 100.0
+    # Compensate for hardware brightness so dim=40 means 40% of the panel's full output,
+    # not 40% of 255 further attenuated by hardware brightness (which would be ~24% effective).
+    h_brightness = max(1, getattr(matrix, 'brightness', 100))
+    raw_scale = max(0.0, min(100.0, dim)) / h_brightness
+    scale = min(1.0, raw_scale)
     amber = (int(255 * scale), int(140 * scale), 0)
     r = renderer
 
