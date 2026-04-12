@@ -661,21 +661,26 @@ def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_t
     return matrix.SwapOnVSync(off)
 
 
-def draw_snake_frame(off, matrix: 'RGBMatrix', snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]], game_over: bool = False):  # type: ignore[name-defined]
-    """Draw the snake easter egg game frame."""
+def draw_snake_frame(off, matrix: 'RGBMatrix', snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]], game_over: bool = False, cell: int = 2):  # type: ignore[name-defined]
+    """Draw the snake easter egg game frame. Each grid cell is cell×cell pixels."""
     off.Fill(0, 0, 0)
+
+    def fill_cell(gx: int, gy: int, r: int, g: int, b: int) -> None:
+        for dy in range(cell):
+            for dx in range(cell):
+                off.SetPixel(gx * cell + dx, gy * cell + dy, r, g, b)
+
     if game_over:
-        for sx, sy in snake_body:
-            off.SetPixel(sx, sy, 255, 0, 0)  # flash red on death
+        for gx, gy in snake_body:
+            fill_cell(gx, gy, 255, 0, 0)  # flash red on death
     else:
         if snake_food:
-            fx, fy = snake_food
-            off.SetPixel(fx, fy, 255, 255, 0)  # yellow food pixel
-        for i, (sx, sy) in enumerate(snake_body):
+            fill_cell(snake_food[0], snake_food[1], 255, 255, 0)  # yellow food
+        for i, (gx, gy) in enumerate(snake_body):
             if i == 0:
-                off.SetPixel(sx, sy, 255, 140, 0)   # head: full amber
+                fill_cell(gx, gy, 255, 140, 0)   # head: full amber
             else:
-                off.SetPixel(sx, sy, 160, 80, 0)     # body: dimmer amber
+                fill_cell(gx, gy, 160, 80, 0)    # body: dimmer amber
     return matrix.SwapOnVSync(off)
 
 
@@ -798,9 +803,10 @@ def run_loop(opts: argparse.Namespace):
     # --- Snake game helpers ---
 
     def _snake_new_food() -> Tuple[int, int]:
+        gcols, grows = opts.cols // 2, opts.rows // 2
         while True:
-            x = random.randint(0, opts.cols - 1)
-            y = random.randint(0, opts.rows - 1)
+            x = random.randint(0, gcols - 1)
+            y = random.randint(0, grows - 1)
             if (x, y) not in snake_body:
                 return (x, y)
 
@@ -816,8 +822,8 @@ def run_loop(opts: argparse.Namespace):
         nonlocal snake_body, snake_food, display_dirty
         hx, hy = snake_body[0]
         dx, dy = snake_dir
-        nx = (hx + dx) % opts.cols
-        ny = (hy + dy) % opts.rows
+        nx = (hx + dx) % (opts.cols // 2)
+        ny = (hy + dy) % (opts.rows // 2)
         # Self-collision: ignore tail (it moves away this tick)
         if (nx, ny) in snake_body[:-1]:
             return False
@@ -836,7 +842,8 @@ def run_loop(opts: argparse.Namespace):
         snake_active = True
         snake_game_over = False
         snake_game_over_ts = 0.0
-        cx, cy = opts.cols // 2, opts.rows // 2
+        gcols, grows = opts.cols // 2, opts.rows // 2
+        cx, cy = gcols // 2, grows // 2
         snake_body = [(cx, cy), (cx - 1, cy), (cx - 2, cy)]
         snake_dir = (1, 0)  # start moving right
         snake_food = _snake_new_food()
