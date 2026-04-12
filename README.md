@@ -130,6 +130,13 @@ git pull
 sudo systemctl restart departure-board.service
 ```
 
+> **Note:** `git pull` only updates files in the repo directory. If you installed the service by **copying** (not symlinking) to `/etc/systemd/system/`, you must also re-copy and reload after any changes to `departure-board.service`:
+> ```bash
+> sudo cp /home/mk/departure-board/departure-board.service /etc/systemd/system/departure-board.service
+> sudo systemctl daemon-reload && sudo systemctl restart departure-board.service
+> ```
+> To avoid this, switch to the symlink approach (see [Auto-start with systemd](#auto-start-with-systemd)).
+
 ## Uninstall
 ```bash
 sudo systemctl disable --now departure-board.service
@@ -202,9 +209,16 @@ ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/mat
 	--encoder-early --encoder-delay 0.05 --enc-clk 10 --enc-dt 9 --enc-sw 11 \
 	--enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5
 ```
-Enable at boot (after copying service file to `/etc/systemd/system/`):
+Enable at boot by **symlinking** the service file (recommended — changes in the repo are picked up automatically after `daemon-reload`, no copy needed):
 ```bash
-sudo cp departure-board.service /etc/systemd/system/
+sudo ln -sf /home/mk/departure-board/departure-board.service /etc/systemd/system/departure-board.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now departure-board.service
+```
+
+Or copy instead of symlink (then you must re-copy and reload after every change):
+```bash
+sudo cp /home/mk/departure-board/departure-board.service /etc/systemd/system/departure-board.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now departure-board.service
 ```
