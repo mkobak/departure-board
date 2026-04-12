@@ -28,6 +28,7 @@ import random
 import signal
 import sys
 import time
+import unicodedata
 from datetime import datetime
 import subprocess
 import os
@@ -662,15 +663,40 @@ def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_t
     return matrix.SwapOnVSync(off)
 
 
-def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message: str, now_text: Optional[str] = None):  # type: ignore[name-defined]
-    """Draw a Telegram message overlay with word-wrap."""
+def _normalize_for_display(text: str) -> str:
+    """Map characters not in the font to their closest renderable equivalent.
+
+    1. If the character is already in the font, keep it.
+    2. Try NFD decomposition (strips diacritics): ú→u, é→e, etc.
+    3. Try the opposite case as a last resort.
+    4. Skip characters that still can't be mapped.
+    """
+    result = []
+    for ch in text:
+        if ch in BITMAP:
+            result.append(ch)
+            continue
+        # NFD strips combining diacritical marks (U+0300–U+036F)
+        nfd = unicodedata.normalize('NFD', ch)
+        base = nfd[0]
+        if base in BITMAP:
+            result.append(base)
+            continue
+        alt = base.upper() if base.islower() else base.lower()
+        if alt in BITMAP:
+            result.append(alt)
+            continue
+        # Unknown — skip silently
+    return ''.join(result)
+
+
+def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message: str):  # type: ignore[name-defined]
+    """Draw a Telegram message overlay with word-wrap, no header."""
     off.Fill(0, 0, 0)
     amber = (255, 140, 0)
     r = renderer
 
-    HEADER_BASELINE_Y = 2
-    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3
-    MSG_START_Y = RULE_Y + 1 + 4
+    MSG_START_Y = BOARD_MARGIN + 2
     inner_width = r.cols - 2 * BOARD_MARGIN - 2
 
     def glyph_width(ch: str) -> int:
@@ -692,19 +718,6 @@ def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message:
             if i != len(text) - 1:
                 cur += CHAR_SPACING
 
-    # Header: "MSG" left, current time right
-    now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
-    header_left = BOARD_MARGIN + 2
-    inner_right = r.cols - BOARD_MARGIN - 1
-    time_x = inner_right - r.measure(now_txt)
-    draw_text(header_left, HEADER_BASELINE_Y, 'MSG')
-    draw_text(time_x, HEADER_BASELINE_Y, now_txt)
-
-    # Separator rule
-    for x in range(BOARD_MARGIN, r.cols - BOARD_MARGIN):
-        off.SetPixel(x, RULE_Y, *amber)
-
-    # Word-wrap the message
     def wrap(text: str, max_w: int) -> List[str]:
         lines: List[str] = []
         current = ''
@@ -715,7 +728,6 @@ def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message:
             else:
                 if current:
                     lines.append(current)
-                # Truncate a single word that is wider than max_w
                 if r.measure(word) > max_w:
                     partial = ''
                     for ch in word:
@@ -735,14 +747,16 @@ def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message:
     if available - max_lines * line_height >= CHAR_H + 1:
         max_lines += 1
 
-    for i, line in enumerate(wrap(message.upper(), inner_width)[:max_lines]):
+    normalized = _normalize_for_display(message)
+    for i, line in enumerate(wrap(normalized, inner_width)[:max_lines]):
         draw_text(BOARD_MARGIN + 1, MSG_START_Y + i * line_height, line)
 
     return matrix.SwapOnVSync(off)
 
 
-def _start_telegram_poller(token: str, allowed_chat_id: str, msg_queue: 'queue.Queue[str]') -> None:
+def _start_telegram_poller(token: str, allowed_chat_ids: str, msg_queue: 'queue.Queue[str]') -> None:
     """Long-poll the Telegram Bot API in a daemon thread and push received messages to msg_queue."""
+    allowed = {s.strip() for s in allowed_chat_ids.split(',') if s.strip()}
     base_url = f'https://api.telegram.org/bot{token}'
     offset = 0
     while True:
@@ -766,7 +780,7 @@ def _start_telegram_poller(token: str, allowed_chat_id: str, msg_queue: 'queue.Q
                 if not text:
                     continue
                 chat_id = str(msg.get('chat', {}).get('id', ''))
-                if allowed_chat_id and chat_id != str(allowed_chat_id):
+                if allowed and chat_id not in allowed:
                     print(f'[telegram] ignoring message from chat {chat_id}', file=sys.stderr)
                     continue
                 print(f'[telegram] message from {chat_id}: {text!r}', file=sys.stderr)
@@ -1042,13 +1056,19 @@ def run_loop(opts: argparse.Namespace):
 
     def _on_button():
         """Toggle page, wake screensaver, or double-click to enter/exit snake game."""
-        nonlocal page_toggle, last_button_event
+        nonlocal page_toggle, last_button_event, telegram_msg, telegram_expires, display_dirty
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
             return
         prev_button_time = last_button_event
         last_button_event = nowb
+        # Dismiss telegram overlay on any button press
+        if telegram_msg is not None:
+            telegram_msg = None
+            telegram_expires = 0.0
+            display_dirty = True
+            return
         # Double-click: second press within 100–400ms window
         if (nowb - prev_button_time) < 0.4:
             if snake_active:
@@ -1579,7 +1599,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--telegram-token', default='',
                    help='Telegram Bot API token (enables message overlay feature)')
     p.add_argument('--telegram-chat-id', default='',
-                   help='Only accept messages from this Telegram chat ID (leave empty to allow all)')
+                   help='Comma-separated Telegram chat IDs to accept messages from (leave empty to allow all)')
     return p.parse_args(argv)
 
 
