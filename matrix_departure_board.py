@@ -1287,6 +1287,7 @@ def run_loop(opts: argparse.Namespace):
                 display_dirty = True
                 last_rendered_minute = ''  # force redraw
                 screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
+                print(f"[screensaver] activated (brightness={screensaver_brightness})", file=sys.stderr)
             # --- Screensaver mode: show the time at a drifting random position ---
             if screensaver_active:
                 now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
@@ -1295,7 +1296,13 @@ def run_loop(opts: argparse.Namespace):
                     display_dirty = True
                     screensaver_pos = screensaver_random_pos(renderer, current_minute)
                 if display_dirty:
-                    offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos)
+                    try:
+                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos)
+                        print(f"[screensaver] drew {current_minute} at {screensaver_pos}", file=sys.stderr)
+                    except Exception as _ss_err:  # noqa: BLE001
+                        import traceback
+                        print(f"[screensaver] draw error: {_ss_err}", file=sys.stderr)
+                        traceback.print_exc(file=sys.stderr)
                     last_rendered_minute = current_minute
                     display_dirty = False
                 time.sleep(poll_interval)
