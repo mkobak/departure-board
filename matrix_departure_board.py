@@ -23,13 +23,14 @@ Note: Must be run with root permissions for GPIO access (sudo).
 from __future__ import annotations
 
 import argparse
+import random
 import signal
 import sys
 import time
 from datetime import datetime
 import subprocess
 import os
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 
 import fetch_departures as fd
 import threading
@@ -616,8 +617,16 @@ def draw_weather_frame(off, matrix: RGBMatrix, renderer: Renderer, header_text: 
     return matrix.SwapOnVSync(off)
 
 
-def draw_screensaver_frame(off, matrix: RGBMatrix, renderer: Renderer, now_text: Optional[str] = None):  # type: ignore[name-defined]
-    """Draw a minimal screensaver: just the current time centered on the panel."""
+def screensaver_random_pos(renderer: 'Renderer', now_txt: str) -> Tuple[int, int]:  # type: ignore[name-defined]
+    """Return a random (x, y) that keeps the time string fully on screen."""
+    time_w = renderer.measure(now_txt)
+    max_x = max(0, renderer.cols - time_w - 1)
+    max_y = max(0, renderer.rows - CHAR_H - 1)
+    return (random.randint(0, max_x), random.randint(0, max_y))
+
+
+def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None):  # type: ignore[name-defined]
+    """Draw a minimal screensaver: just the current time at the given position (or centered)."""
     off.Fill(0, 0, 0)
     amber = (255, 140, 0)
     r = renderer
@@ -627,18 +636,21 @@ def draw_screensaver_frame(off, matrix: RGBMatrix, renderer: Renderer, now_text:
     def glyph_width(ch: str) -> int:
         return r.glyph_width(ch)
 
-    def draw_glyph(x: int, y: int, ch: str):
+    def draw_glyph(x: int, y: int, ch: str) -> None:
         bmp = BITMAP.get(ch, BITMAP[' '])
         whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
         for dy, brow in enumerate(bmp):
             for dx, bit in enumerate(brow[:glyph_width(ch)]):
                 if bit:
-                    off.SetPixel(x+dx, y+dy+whole_offset, *amber)
+                    off.SetPixel(x + dx, y + dy + whole_offset, *amber)
 
-    # Center the time on the panel
-    time_w = r.measure(now_txt)
-    x = (r.cols - time_w) // 2
-    y = (r.rows - CHAR_H) // 2
+    if pos is not None:
+        x, y = pos
+    else:
+        time_w = r.measure(now_txt)
+        x = (r.cols - time_w) // 2
+        y = (r.rows - CHAR_H) // 2
+
     cur = x
     for i, ch in enumerate(now_txt):
         draw_glyph(cur, y, ch)
@@ -733,6 +745,7 @@ def run_loop(opts: argparse.Namespace):
     screensaver_timeout: float = float(getattr(opts, 'screensaver_timeout', 600))  # seconds of inactivity
     screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 15))  # dim brightness
     normal_brightness: int = opts.brightness         # remember the normal brightness
+    screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
@@ -1146,14 +1159,16 @@ def run_loop(opts: argparse.Namespace):
                 matrix.brightness = screensaver_brightness
                 display_dirty = True
                 last_rendered_minute = ''  # force redraw
-            # --- Screensaver mode: just show the time ---
+                screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
+            # --- Screensaver mode: show the time at a drifting random position ---
             if screensaver_active:
                 now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
                 current_minute = now_txt_override or datetime.now().strftime('%H:%M')
                 if current_minute != last_rendered_minute:
                     display_dirty = True
+                    screensaver_pos = screensaver_random_pos(renderer, current_minute)
                 if display_dirty:
-                    offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override)
+                    offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos)
                     last_rendered_minute = current_minute
                     display_dirty = False
                 time.sleep(poll_interval)
