@@ -23,6 +23,7 @@ Note: Must be run with root permissions for GPIO access (sudo).
 from __future__ import annotations
 
 import argparse
+import queue
 import random
 import signal
 import sys
@@ -661,6 +662,123 @@ def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_t
     return matrix.SwapOnVSync(off)
 
 
+def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message: str, now_text: Optional[str] = None):  # type: ignore[name-defined]
+    """Draw a Telegram message overlay with word-wrap."""
+    off.Fill(0, 0, 0)
+    amber = (255, 140, 0)
+    r = renderer
+
+    HEADER_BASELINE_Y = 2
+    RULE_Y = HEADER_BASELINE_Y + CHAR_H + 3
+    MSG_START_Y = RULE_Y + 1 + 4
+    inner_width = r.cols - 2 * BOARD_MARGIN - 2
+
+    def glyph_width(ch: str) -> int:
+        return r.glyph_width(ch)
+
+    def draw_glyph(x: int, y: int, ch: str) -> None:
+        bmp = BITMAP.get(ch, BITMAP[' '])
+        whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
+        for dy, brow in enumerate(bmp):
+            for dx, bit in enumerate(brow[:glyph_width(ch)]):
+                if bit:
+                    off.SetPixel(x + dx, y + dy + whole_offset, *amber)
+
+    def draw_text(x: int, y: int, text: str) -> None:
+        cur = x
+        for i, ch in enumerate(text):
+            draw_glyph(cur, y, ch)
+            cur += glyph_width(ch)
+            if i != len(text) - 1:
+                cur += CHAR_SPACING
+
+    # Header: "MSG" left, current time right
+    now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
+    header_left = BOARD_MARGIN + 2
+    inner_right = r.cols - BOARD_MARGIN - 1
+    time_x = inner_right - r.measure(now_txt)
+    draw_text(header_left, HEADER_BASELINE_Y, 'MSG')
+    draw_text(time_x, HEADER_BASELINE_Y, now_txt)
+
+    # Separator rule
+    for x in range(BOARD_MARGIN, r.cols - BOARD_MARGIN):
+        off.SetPixel(x, RULE_Y, *amber)
+
+    # Word-wrap the message
+    def wrap(text: str, max_w: int) -> List[str]:
+        lines: List[str] = []
+        current = ''
+        for word in text.split():
+            candidate = (current + ' ' + word).strip()
+            if r.measure(candidate) <= max_w:
+                current = candidate
+            else:
+                if current:
+                    lines.append(current)
+                # Truncate a single word that is wider than max_w
+                if r.measure(word) > max_w:
+                    partial = ''
+                    for ch in word:
+                        if r.measure(partial + ch) > max_w:
+                            break
+                        partial += ch
+                    current = partial
+                else:
+                    current = word
+        if current:
+            lines.append(current)
+        return lines
+
+    line_height = CHAR_H + LINE_SPACING
+    available = r.rows - MSG_START_Y - BOARD_MARGIN
+    max_lines = available // line_height
+    if available - max_lines * line_height >= CHAR_H + 1:
+        max_lines += 1
+
+    for i, line in enumerate(wrap(message.upper(), inner_width)[:max_lines]):
+        draw_text(BOARD_MARGIN + 1, MSG_START_Y + i * line_height, line)
+
+    return matrix.SwapOnVSync(off)
+
+
+def _start_telegram_poller(token: str, allowed_chat_id: str, msg_queue: 'queue.Queue[str]') -> None:
+    """Long-poll the Telegram Bot API in a daemon thread and push received messages to msg_queue."""
+    base_url = f'https://api.telegram.org/bot{token}'
+    offset = 0
+    while True:
+        try:
+            resp = requests.get(
+                f'{base_url}/getUpdates',
+                params={'timeout': 25, 'offset': offset},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get('ok'):
+                time.sleep(5)
+                continue
+            for update in data.get('result', []):
+                offset = update['update_id'] + 1
+                msg = update.get('message') or update.get('channel_post')
+                if msg is None:
+                    continue
+                text = (msg.get('text') or '').strip()
+                if not text:
+                    continue
+                chat_id = str(msg.get('chat', {}).get('id', ''))
+                if allowed_chat_id and chat_id != str(allowed_chat_id):
+                    print(f'[telegram] ignoring message from chat {chat_id}', file=sys.stderr)
+                    continue
+                print(f'[telegram] message from {chat_id}: {text!r}', file=sys.stderr)
+                try:
+                    msg_queue.put_nowait(text)
+                except queue.Full:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            print(f'[telegram] polling error: {e}', file=sys.stderr)
+            time.sleep(5)
+
+
 def draw_snake_frame(off, matrix: 'RGBMatrix', snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]], game_over: bool = False, cell: int = 2):  # type: ignore[name-defined]
     """Draw the snake easter egg game frame. Each grid cell is cell×cell pixels."""
     off.Fill(0, 0, 0)
@@ -779,6 +897,11 @@ def run_loop(opts: argparse.Namespace):
     snake_move_interval: float = 0.15      # seconds per step (~6.5 moves/sec)
     snake_game_over: bool = False
     snake_game_over_ts: float = 0.0
+
+    # Telegram message overlay
+    telegram_queue: queue.Queue = queue.Queue(maxsize=10)
+    telegram_msg: Optional[str] = None     # currently displayed message
+    telegram_expires: float = 0.0          # epoch time when overlay ends
 
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
@@ -1060,6 +1183,16 @@ def run_loop(opts: argparse.Namespace):
                 encoder = None
         threading.Thread(target=_start_encoder, daemon=True).start()
 
+    # Telegram bot poller
+    _telegram_token = getattr(opts, 'telegram_token', '')
+    if _telegram_token:
+        threading.Thread(
+            target=_start_telegram_poller,
+            args=(_telegram_token, getattr(opts, 'telegram_chat_id', ''), telegram_queue),
+            daemon=True,
+        ).start()
+        print('[telegram] bot poller started', file=sys.stderr)
+
     # Fetch helpers
     def fetch_rows(screen: Dict[str, Any], timeout: float = 10.0) -> List[Dict[str, Any]]:
         # Increase fetch size to ensure enough items for two pages even after filtering
@@ -1280,6 +1413,32 @@ def run_loop(opts: argparse.Namespace):
                     display_dirty = False
                 time.sleep(poll_interval)
                 continue
+            # --- Telegram message overlay ---
+            # Drain any newly received messages (keep the latest one)
+            try:
+                while True:
+                    new_msg = telegram_queue.get_nowait()
+                    telegram_msg = new_msg
+                    telegram_expires = now + 30.0
+                    # Wake screensaver and restore brightness so the message is visible
+                    if screensaver_active:
+                        screensaver_active = False
+                        matrix.brightness = normal_brightness
+                    display_dirty = True
+            except queue.Empty:
+                pass
+            # Expire the overlay once 30 seconds are up
+            if telegram_msg is not None and now >= telegram_expires:
+                telegram_msg = None
+                display_dirty = True
+            # While a telegram message is active, show only that
+            if telegram_msg is not None:
+                if display_dirty:
+                    offscreen = draw_telegram_frame(offscreen, matrix, renderer, telegram_msg)
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
+
             # --- Screensaver activation check ---
             if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
                 screensaver_active = True
@@ -1416,11 +1575,40 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Seconds of inactivity before screensaver activates (0 to disable, default 600 = 10min)')
     p.add_argument('--screensaver-brightness', type=int, default=15,
                    help='Panel brightness during screensaver (0-100, default 15)')
+    # Telegram bot options
+    p.add_argument('--telegram-token', default='',
+                   help='Telegram Bot API token (enables message overlay feature)')
+    p.add_argument('--telegram-chat-id', default='',
+                   help='Only accept messages from this Telegram chat ID (leave empty to allow all)')
     return p.parse_args(argv)
+
+
+def _load_dotenv(path: str = '.env') -> Dict[str, str]:
+    """Parse a simple KEY=VALUE .env file, ignoring comments and blank lines."""
+    env: Dict[str, str] = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' not in line:
+                    continue
+                key, _, value = line.partition('=')
+                env[key.strip()] = value.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return env
 
 
 def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover
     opts = parse_args(argv)
+    # Fall back to .env for Telegram credentials if not supplied via CLI
+    env = _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+    if not opts.telegram_token and env.get('TELEGRAM_TOKEN'):
+        opts.telegram_token = env['TELEGRAM_TOKEN']
+    if not opts.telegram_chat_id and env.get('TELEGRAM_CHAT_ID'):
+        opts.telegram_chat_id = env['TELEGRAM_CHAT_ID']
     run_loop(opts)
     return 0
 

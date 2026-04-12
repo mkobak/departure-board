@@ -51,6 +51,7 @@ Icon?
 # ---- Environment / local config ----
 *.env
 *.env.*
+!.env.example
 .envrc
 
 # ---- Temporary files ----
