@@ -10,7 +10,7 @@ Group=mk
 # Working directory with virtual environment
 WorkingDirectory=/home/mk/departure-board
 # Use the virtual environment python so requests (and future deps) are isolated (PEP 668 compliant)
-ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 60 --gpio-mapping adafruit-hat --encoder-delay 0.25 --enc-clk 10 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --slowdown-gpio 1 --pwm-lsb-ns 100 --pwm-bits 5 --ntp-wait-mode auto --screensaver-timeout 6 --screensaver-brightness 30 --encoder-debug
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 60 --gpio-mapping adafruit-hat --encoder-delay 0.25 --enc-clk 10 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --slowdown-gpio 1 --pwm-lsb-ns 100 --pwm-bits 7 --ntp-wait-mode auto --screensaver-timeout 6 --screensaver-brightness 30 --encoder-debug
 Restart=on-failure
 RestartSec=5
 Environment=TZ=Europe/Zurich
