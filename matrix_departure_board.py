@@ -661,6 +661,24 @@ def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_t
     return matrix.SwapOnVSync(off)
 
 
+def draw_snake_frame(off, matrix: 'RGBMatrix', snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]], game_over: bool = False):  # type: ignore[name-defined]
+    """Draw the snake easter egg game frame."""
+    off.Fill(0, 0, 0)
+    if game_over:
+        for sx, sy in snake_body:
+            off.SetPixel(sx, sy, 255, 0, 0)  # flash red on death
+    else:
+        if snake_food:
+            fx, fy = snake_food
+            off.SetPixel(fx, fy, 255, 255, 0)  # yellow food pixel
+        for i, (sx, sy) in enumerate(snake_body):
+            if i == 0:
+                off.SetPixel(sx, sy, 255, 140, 0)   # head: full amber
+            else:
+                off.SetPixel(sx, sy, 160, 80, 0)     # body: dimmer amber
+    return matrix.SwapOnVSync(off)
+
+
 def run_loop(opts: argparse.Namespace):
     if not MATRIX_AVAILABLE:
         print("rgbmatrix library not available. Falling back to plain text output (developer mode).", file=sys.stderr)
@@ -747,6 +765,16 @@ def run_loop(opts: argparse.Namespace):
     normal_brightness: int = opts.brightness         # remember the normal brightness
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
+    # Snake easter egg state
+    snake_active: bool = False
+    snake_body: List[Tuple[int, int]] = []
+    snake_dir: Tuple[int, int] = (1, 0)
+    snake_food: Optional[Tuple[int, int]] = None
+    snake_last_move: float = 0.0
+    snake_move_interval: float = 0.15      # seconds per step (~6.5 moves/sec)
+    snake_game_over: bool = False
+    snake_game_over_ts: float = 0.0
+
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
         t = time.time() + delay
@@ -766,6 +794,59 @@ def run_loop(opts: argparse.Namespace):
             matrix.brightness = normal_brightness
             display_dirty = True
             schedule_fetch(0.0)  # refresh departures immediately on wake
+
+    # --- Snake game helpers ---
+
+    def _snake_new_food() -> Tuple[int, int]:
+        while True:
+            x = random.randint(0, opts.cols - 1)
+            y = random.randint(0, opts.rows - 1)
+            if (x, y) not in snake_body:
+                return (x, y)
+
+    def _snake_turn(direction: int):
+        nonlocal snake_dir
+        dx, dy = snake_dir
+        if direction > 0:   # clockwise: right -> down -> left -> up
+            snake_dir = (-dy, dx)
+        else:               # counter-clockwise
+            snake_dir = (dy, -dx)
+
+    def _snake_step() -> bool:
+        nonlocal snake_body, snake_food, display_dirty
+        hx, hy = snake_body[0]
+        dx, dy = snake_dir
+        nx = (hx + dx) % opts.cols
+        ny = (hy + dy) % opts.rows
+        # Self-collision: ignore tail (it moves away this tick)
+        if (nx, ny) in snake_body[:-1]:
+            return False
+        ate = (nx, ny) == snake_food
+        snake_body.insert(0, (nx, ny))
+        if not ate:
+            snake_body.pop()
+        else:
+            snake_food = _snake_new_food()
+        display_dirty = True
+        return True
+
+    def _enter_snake():
+        nonlocal snake_active, snake_body, snake_dir, snake_food
+        nonlocal snake_last_move, snake_game_over, snake_game_over_ts, display_dirty
+        snake_active = True
+        snake_game_over = False
+        snake_game_over_ts = 0.0
+        cx, cy = opts.cols // 2, opts.rows // 2
+        snake_body = [(cx, cy), (cx - 1, cy), (cx - 2, cy)]
+        snake_dir = (1, 0)  # start moving right
+        snake_food = _snake_new_food()
+        snake_last_move = time.time()
+        display_dirty = True
+
+    def _exit_snake():
+        nonlocal snake_active, display_dirty
+        snake_active = False
+        display_dirty = True
 
     def _accept_rotation(direction: int):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty
@@ -791,6 +872,12 @@ def run_loop(opts: argparse.Namespace):
         if now - last_rotation_action < rotation_action_cooldown:
             return
         last_rotation_accept = now
+        # Snake mode: dial steers the snake
+        if snake_active:
+            direction = 1 if raw_delta > 0 else -1
+            _snake_turn(direction)
+            last_rotation_action = now
+            return
         if screensaver_active:
             _wake_from_screensaver()
             last_rotation_action = now
@@ -824,13 +911,24 @@ def run_loop(opts: argparse.Namespace):
         _update_display_rows_from_page()
 
     def _on_button():
-        """Toggle between first and next 4 departures for current stop, or wake from screensaver."""
+        """Toggle page, wake screensaver, or double-click to enter/exit snake game."""
         nonlocal page_toggle, last_button_event
         nowb = time.time()
-        # Additional guard to ignore accidental rapid repeats (<100ms)
+        # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
             return
+        prev_button_time = last_button_event
         last_button_event = nowb
+        # Double-click: second press within 100–400ms window
+        if (nowb - prev_button_time) < 0.4:
+            if snake_active:
+                _exit_snake()
+            else:
+                _enter_snake()
+            return
+        # Single click while snake active: ignored
+        if snake_active:
+            return
         if screensaver_active:
             _wake_from_screensaver()
             return
@@ -1153,6 +1251,28 @@ def run_loop(opts: argparse.Namespace):
         poll_interval = 0.05  # 50ms poll — responsive enough for encoder + clock
         while running:
             now = time.time()
+            # --- Snake game mode ---
+            if snake_active:
+                if snake_game_over:
+                    # Show red flash for 1 second then return to normal
+                    if now - snake_game_over_ts >= 1.0:
+                        _exit_snake()
+                    time.sleep(poll_interval)
+                    continue
+                if now >= snake_last_move + snake_move_interval:
+                    snake_last_move = now
+                    alive = _snake_step()
+                    if not alive:
+                        snake_game_over = True
+                        snake_game_over_ts = now
+                        offscreen = draw_snake_frame(offscreen, matrix, snake_body, snake_food, game_over=True)
+                        time.sleep(poll_interval)
+                        continue
+                if display_dirty:
+                    offscreen = draw_snake_frame(offscreen, matrix, snake_body, snake_food)
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
             # --- Screensaver activation check ---
             if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
                 screensaver_active = True
