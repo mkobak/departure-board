@@ -627,10 +627,15 @@ def screensaver_random_pos(renderer: 'Renderer', now_txt: str) -> Tuple[int, int
     return (random.randint(0, max_x), random.randint(0, max_y))
 
 
-def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None):  # type: ignore[name-defined]
-    """Draw a minimal screensaver: just the current time at the given position (or centered)."""
+def draw_screensaver_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None, dim: int = 60):  # type: ignore[name-defined]
+    """Draw a minimal screensaver: just the current time at the given position (or centered).
+
+    dim: apparent brightness 0-100, applied by scaling pixel color values directly so
+         matrix.brightness is never touched (avoids hardware reset side-effects).
+    """
     off.Fill(0, 0, 0)
-    amber = (255, 140, 0)
+    scale = max(0, min(100, dim)) / 100.0
+    amber = (int(255 * scale), int(140 * scale), 0)
     r = renderer
 
     now_txt = now_text if now_text is not None else datetime.now().strftime('%H:%M')
@@ -898,8 +903,7 @@ def run_loop(opts: argparse.Namespace):
     screensaver_active: bool = False                 # whether screensaver is currently on
     last_interaction: float = time.time()            # last button/rotation time for screensaver timeout
     screensaver_timeout: float = float(getattr(opts, 'screensaver_timeout', 600))  # seconds of inactivity
-    screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 15))  # dim brightness
-    normal_brightness: int = opts.brightness         # remember the normal brightness
+    screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 40))  # dim brightness (0-100)
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
     # Snake easter egg state
@@ -933,7 +937,6 @@ def run_loop(opts: argparse.Namespace):
         last_interaction = time.time()
         if screensaver_active:
             screensaver_active = False
-            matrix.brightness = normal_brightness
             display_dirty = True
             schedule_fetch(0.0)  # refresh departures immediately on wake
 
@@ -1440,10 +1443,9 @@ def run_loop(opts: argparse.Namespace):
                     new_msg = telegram_queue.get_nowait()
                     telegram_msg = new_msg
                     telegram_expires = now + 30.0
-                    # Wake screensaver and restore brightness so the message is visible
+                    # Wake screensaver so the message is visible
                     if screensaver_active:
                         screensaver_active = False
-                        matrix.brightness = normal_brightness
                     display_dirty = True
             except queue.Empty:
                 pass
@@ -1462,11 +1464,10 @@ def run_loop(opts: argparse.Namespace):
             # --- Screensaver activation check ---
             if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
                 screensaver_active = True
-                matrix.brightness = screensaver_brightness
                 display_dirty = True
                 last_rendered_minute = ''  # force redraw
                 screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
-                print(f"[screensaver] activated (brightness={screensaver_brightness})", file=sys.stderr)
+                print(f"[screensaver] activated (dim={screensaver_brightness})", file=sys.stderr)
             # --- Screensaver mode: show the time at a drifting random position ---
             if screensaver_active:
                 now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
@@ -1476,7 +1477,7 @@ def run_loop(opts: argparse.Namespace):
                     screensaver_pos = screensaver_random_pos(renderer, current_minute)
                 if display_dirty:
                     try:
-                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos)
+                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos, dim=screensaver_brightness)
                         print(f"[screensaver] drew {current_minute} at {screensaver_pos}", file=sys.stderr)
                     except Exception as _ss_err:  # noqa: BLE001
                         import traceback
