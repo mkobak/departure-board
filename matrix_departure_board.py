@@ -865,17 +865,12 @@ def draw_menu_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', username: st
     return matrix.SwapOnVSync(off)
 
 
-def draw_pregame_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', username: str, high_scores: List[Dict[str, Any]]):  # type: ignore[name-defined]
+def draw_pregame_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', high_scores: List[Dict[str, Any]]):  # type: ignore[name-defined]
     """Draw the pre-game screen with > Play and top 3 high scores."""
     off.Fill(0, 0, 0)
     _, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
     y = BOARD_MARGIN + 2
-
-    # Username line
-    name_label = _normalize_for_display(f"Name: {username}")
-    draw_text(BOARD_MARGIN + 1, y, name_label)
-    y += line_h + 3
 
     # Play button
     draw_text(BOARD_MARGIN + 1, y, _normalize_for_display("> Play"))
@@ -1704,7 +1699,7 @@ def run_loop(opts: argparse.Namespace):
             if game_mode == "pregame":
                 if display_dirty:
                     offscreen = draw_pregame_frame(offscreen, matrix, renderer,
-                        menu_username, cached_high_scores)
+                        cached_high_scores)
                     display_dirty = False
                 time.sleep(poll_interval)
                 continue
