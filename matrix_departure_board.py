@@ -23,6 +23,7 @@ Note: Must be run with root permissions for GPIO access (sudo).
 from __future__ import annotations
 
 import argparse
+import json
 import queue
 import random
 import signal
@@ -203,6 +204,66 @@ DEST_MINS_GAP = 4
 RIGHT_MARGIN = 1
 MIN_IDENT_CHARS = 2
 BOARD_MARGIN = 1  # ensure 1px dark border on all sides
+
+# ----------------------------- Draw helpers factory -------------------------
+def make_draw_helpers(off, renderer, color=(255, 140, 0)):
+    """Return (draw_glyph, draw_text, measure) closures bound to the given canvas and color."""
+    r = renderer
+    def glyph_width(ch: str) -> int:
+        return r.glyph_width(ch)
+    def draw_glyph(x: int, y: int, ch: str) -> None:
+        bmp = BITMAP.get(ch, BITMAP[' '])
+        whole_offset = 2 if ch in DESCENDERS else (1 if ch == ',' else 0)
+        for dy, brow in enumerate(bmp):
+            for dx, bit in enumerate(brow[:glyph_width(ch)]):
+                if bit:
+                    off.SetPixel(x + dx, y + dy + whole_offset, *color)
+    def measure(text: str) -> int:
+        return r.measure(text)
+    def draw_text(x: int, y: int, text: str) -> int:
+        cur = x
+        for i, ch in enumerate(text):
+            draw_glyph(cur, y, ch)
+            cur += glyph_width(ch)
+            if i != len(text) - 1:
+                cur += CHAR_SPACING
+        return cur - x
+    return draw_glyph, draw_text, measure
+
+# ----------------------------- High score persistence -----------------------
+SCORES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.highscores.json')
+MAX_SCORES_PER_GAME = 20
+
+def load_high_scores(game_name: str) -> List[Dict[str, Any]]:
+    """Return list of {'name': str, 'score': int} sorted descending by score."""
+    try:
+        with open(SCORES_FILE) as f:
+            data = json.load(f)
+        return sorted(data.get(game_name, []), key=lambda e: e['score'], reverse=True)[:MAX_SCORES_PER_GAME]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return []
+
+def save_high_score(game_name: str, name: str, score: int) -> None:
+    """Add a score entry and persist. Only saves if score > 0."""
+    if score <= 0:
+        return
+    try:
+        with open(SCORES_FILE) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    entries = data.get(game_name, [])
+    entries.append({'name': name, 'score': score})
+    entries.sort(key=lambda e: e['score'], reverse=True)
+    data[game_name] = entries[:MAX_SCORES_PER_GAME]
+    try:
+        with open(SCORES_FILE, 'w') as f:
+            json.dump(data, f)
+    except OSError as e:
+        print(f"[scores] save error: {e}", file=sys.stderr)
+
+# Game registry (extensible)
+GAME_LIST = ["Snake"]
 
 # ----------------------------- Weather support -----------------------------
 # Minimal weather integration using Open-Meteo (no API key needed)
@@ -780,6 +841,30 @@ def draw_telegram_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', message:
     return matrix.SwapOnVSync(off)
 
 
+def draw_menu_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', username: str, game_list: List[str], selection: int):  # type: ignore[name-defined]
+    """Draw the game selection menu."""
+    off.Fill(0, 0, 0)
+    draw_glyph, draw_text, measure = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+    y = BOARD_MARGIN + 2
+
+    # Username line
+    name_label = _normalize_for_display(f"Name: {username}")
+    draw_text(BOARD_MARGIN + 1, y, name_label)
+    y += line_h + 3  # extra gap after name
+
+    # Game list with selector
+    for i, game_name in enumerate(game_list):
+        prefix = "> " if i == selection else "  "
+        text = _normalize_for_display(prefix + game_name)
+        draw_text(BOARD_MARGIN + 1, y, text)
+        y += line_h
+        if y + CHAR_H > renderer.rows - BOARD_MARGIN:
+            break
+
+    return matrix.SwapOnVSync(off)
+
+
 def _start_telegram_poller(token: str, allowed_chat_ids: str, msg_queue: 'queue.Queue[str]') -> None:
     """Long-poll the Telegram Bot API in a daemon thread and push received messages to msg_queue."""
     allowed = {s.strip() for s in allowed_chat_ids.split(',') if s.strip()}
@@ -819,14 +904,67 @@ def _start_telegram_poller(token: str, allowed_chat_ids: str, msg_queue: 'queue.
             time.sleep(5)
 
 
-def draw_snake_frame(off, matrix: 'RGBMatrix', snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]], game_over: bool = False, cell: int = 2):  # type: ignore[name-defined]
-    """Draw the snake easter egg game frame. Each grid cell is cell×cell pixels."""
+def draw_snake_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer',  # type: ignore[name-defined]
+                     snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]],
+                     game_over: bool = False, cell: int = 2,
+                     game_x_offset: int = 43,
+                     username: str = "Anonymous", score: int = 0,
+                     high_scores: Optional[List[Dict[str, Any]]] = None, **_kw):
+    """Draw the snake game with left score panel and right play area."""
     off.Fill(0, 0, 0)
 
+    panel_width = game_x_offset - 2  # usable panel content width
+    separator_x = game_x_offset - 1  # vertical divider line
+
+    # --- Score Panel (left side) ---
+    _, draw_text, measure = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+    y = BOARD_MARGIN + 1
+
+    # Player name (truncate to fit panel)
+    name_display = _normalize_for_display(username)
+    truncated = ""
+    for ch in name_display:
+        if measure(truncated + ch) > panel_width:
+            break
+        truncated += ch
+    draw_text(BOARD_MARGIN, y, truncated)
+    y += line_h
+
+    # Score
+    score_text = _normalize_for_display(str(score))
+    draw_text(BOARD_MARGIN, y, score_text)
+    y += line_h + 3  # gap before high scores
+
+    # High scores
+    if high_scores:
+        for entry in high_scores:
+            if y + CHAR_H > renderer.rows - BOARD_MARGIN:
+                break
+            hs_name = _normalize_for_display(entry['name'][:6])
+            hs_score = str(entry['score'])
+            hs_text = f"{hs_name} {hs_score}"
+            # Truncate if too wide
+            truncated_hs = ""
+            for ch in _normalize_for_display(hs_text):
+                if measure(truncated_hs + ch) > panel_width:
+                    break
+                truncated_hs += ch
+            draw_text(BOARD_MARGIN, y, truncated_hs)
+            y += line_h
+
+    # Separator line (dim amber)
+    for py in range(renderer.rows):
+        off.SetPixel(separator_x, py, 80, 40, 0)
+
+    # --- Game Area (right side) ---
     def fill_cell(gx: int, gy: int, r: int, g: int, b: int) -> None:
         for dy in range(cell):
             for dx in range(cell):
-                off.SetPixel(gx * cell + dx, gy * cell + dy, r, g, b)
+                px = game_x_offset + gx * cell + dx
+                py = gy * cell + dy
+                if px < renderer.cols and py < renderer.rows:
+                    off.SetPixel(px, py, r, g, b)
 
     if game_over:
         for gx, gy in snake_body:
@@ -927,15 +1065,27 @@ def run_loop(opts: argparse.Namespace):
     screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 40))  # dim brightness (0-100)
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
+    # Game system state
+    game_mode: str = "normal"  # "normal" | "menu" | "snake"
+    menu_selection: int = 0    # index into GAME_LIST
+    menu_username: str = "Anonymous"
+    cached_high_scores: List[Dict[str, Any]] = []
+
     # Snake easter egg state
-    snake_active: bool = False
     snake_body: List[Tuple[int, int]] = []
     snake_dir: Tuple[int, int] = (1, 0)
     snake_food: Optional[Tuple[int, int]] = None
     snake_last_move: float = 0.0
     snake_move_interval: float = 0.15      # seconds per step (~6.5 moves/sec)
+    snake_base_interval: float = 0.15      # base speed (reset each game)
     snake_game_over: bool = False
     snake_game_over_ts: float = 0.0
+
+    # Snake game grid dimensions (right 2/3 of screen)
+    SNAKE_GAME_X_OFFSET = 43
+    SNAKE_GAME_COLS = opts.cols - SNAKE_GAME_X_OFFSET  # 85
+    SNAKE_GRID_COLS = SNAKE_GAME_COLS // 2  # 42
+    SNAKE_GRID_ROWS = opts.rows // 2        # 32
 
     # Telegram message overlay
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -964,10 +1114,9 @@ def run_loop(opts: argparse.Namespace):
     # --- Snake game helpers ---
 
     def _snake_new_food() -> Tuple[int, int]:
-        gcols, grows = opts.cols // 2, opts.rows // 2
         while True:
-            x = random.randint(0, gcols - 1)
-            y = random.randint(0, grows - 1)
+            x = random.randint(0, SNAKE_GRID_COLS - 1)
+            y = random.randint(0, SNAKE_GRID_ROWS - 1)
             if (x, y) not in snake_body:
                 return (x, y)
 
@@ -980,11 +1129,11 @@ def run_loop(opts: argparse.Namespace):
             snake_dir = (dy, -dx)
 
     def _snake_step() -> bool:
-        nonlocal snake_body, snake_food, display_dirty
+        nonlocal snake_body, snake_food, snake_move_interval, display_dirty
         hx, hy = snake_body[0]
         dx, dy = snake_dir
-        nx = (hx + dx) % (opts.cols // 2)
-        ny = (hy + dy) % (opts.rows // 2)
+        nx = (hx + dx) % SNAKE_GRID_COLS
+        ny = (hy + dy) % SNAKE_GRID_ROWS
         # Self-collision: ignore tail (it moves away this tick)
         if (nx, ny) in snake_body[:-1]:
             return False
@@ -994,26 +1143,30 @@ def run_loop(opts: argparse.Namespace):
             snake_body.pop()
         else:
             snake_food = _snake_new_food()
+            # Speed progression: ~1.5x faster at 20 points
+            current_score = len(snake_body) - 3
+            snake_move_interval = snake_base_interval * (0.98 ** current_score)
         display_dirty = True
         return True
 
     def _enter_snake():
-        nonlocal snake_active, snake_body, snake_dir, snake_food
-        nonlocal snake_last_move, snake_game_over, snake_game_over_ts, display_dirty
-        snake_active = True
+        nonlocal game_mode, snake_body, snake_dir, snake_food, snake_move_interval
+        nonlocal snake_last_move, snake_game_over, snake_game_over_ts, display_dirty, cached_high_scores
+        game_mode = "snake"
         snake_game_over = False
         snake_game_over_ts = 0.0
-        gcols, grows = opts.cols // 2, opts.rows // 2
-        cx, cy = gcols // 2, grows // 2
+        snake_move_interval = snake_base_interval
+        cx, cy = SNAKE_GRID_COLS // 2, SNAKE_GRID_ROWS // 2
         snake_body = [(cx, cy), (cx - 1, cy), (cx - 2, cy)]
         snake_dir = (1, 0)  # start moving right
         snake_food = _snake_new_food()
         snake_last_move = time.time()
+        cached_high_scores = load_high_scores("snake")
         display_dirty = True
 
     def _exit_snake():
-        nonlocal snake_active, display_dirty
-        snake_active = False
+        nonlocal game_mode, display_dirty
+        game_mode = "menu"
         display_dirty = True
 
     def _accept_rotation(direction: int):
@@ -1029,7 +1182,7 @@ def run_loop(opts: argparse.Namespace):
         schedule_fetch(rotate_fetch_delay)
 
     def _on_rotate(raw_delta: int):  # noqa: D401
-        nonlocal last_rotation_accept, last_rotation_action
+        nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -1040,8 +1193,15 @@ def run_loop(opts: argparse.Namespace):
         if now - last_rotation_action < rotation_action_cooldown:
             return
         last_rotation_accept = now
+        # Menu mode: dial scrolls the game selection
+        if game_mode == "menu":
+            direction = 1 if raw_delta > 0 else -1
+            menu_selection = (menu_selection + direction) % len(GAME_LIST)
+            display_dirty = True
+            last_rotation_action = now
+            return
         # Snake mode: dial steers the snake
-        if snake_active:
+        if game_mode == "snake":
             direction = 1 if raw_delta > 0 else -1
             _snake_turn(direction)
             last_rotation_action = now
@@ -1079,8 +1239,9 @@ def run_loop(opts: argparse.Namespace):
         _update_display_rows_from_page()
 
     def _on_button():
-        """Toggle page, wake screensaver, or double-click to enter/exit snake game."""
-        nonlocal page_toggle, last_button_event, telegram_msg, telegram_expires, display_dirty
+        """Toggle page, wake screensaver, or double-click to enter/exit game menu."""
+        nonlocal game_mode, menu_selection, menu_username, page_toggle, last_button_event
+        nonlocal telegram_msg, telegram_expires, display_dirty, cached_high_scores
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
@@ -1095,13 +1256,32 @@ def run_loop(opts: argparse.Namespace):
             return
         # Double-click: second press within 100–400ms window
         if (nowb - prev_button_time) < 0.4:
-            if snake_active:
-                _exit_snake()
+            if game_mode == "snake":
+                # Save score and return to menu
+                score = len(snake_body) - 3
+                save_high_score("snake", menu_username, score)
+                cached_high_scores = load_high_scores("snake")
+                game_mode = "menu"
+                display_dirty = True
+            elif game_mode == "menu":
+                # Exit menu back to normal
+                game_mode = "normal"
+                menu_username = "Anonymous"
+                display_dirty = True
+                schedule_fetch(0.0)
             else:
+                # Enter menu from normal mode
+                game_mode = "menu"
+                menu_selection = 0
+                display_dirty = True
+            return
+        # Single click in menu: confirm selection and start game
+        if game_mode == "menu":
+            if GAME_LIST[menu_selection] == "Snake":
                 _enter_snake()
             return
         # Single click while snake active: ignored
-        if snake_active:
+        if game_mode == "snake":
             return
         if screensaver_active:
             _wake_from_screensaver()
@@ -1435,11 +1615,31 @@ def run_loop(opts: argparse.Namespace):
         poll_interval = 0.05  # 50ms poll — responsive enough for encoder + clock
         while running:
             now = time.time()
+            # --- Telegram queue drain (needed by both menu and normal modes) ---
+            try:
+                while True:
+                    new_msg = telegram_queue.get_nowait()
+                    if game_mode == "menu":
+                        # Capture username from telegram message
+                        menu_username = new_msg.strip()[:10] or "Anonymous"
+                        display_dirty = True
+                    else:
+                        telegram_msg = new_msg
+                        telegram_expires = now + 30.0
+                        # Wake screensaver so the message is visible
+                        if screensaver_active:
+                            screensaver_active = False
+                        display_dirty = True
+            except queue.Empty:
+                pass
             # --- Snake game mode ---
-            if snake_active:
+            if game_mode == "snake":
                 if snake_game_over:
-                    # Show red flash for 1 second then return to normal
-                    if now - snake_game_over_ts >= 1.0:
+                    # Show red flash for 1.5 seconds then save score and return to menu
+                    if now - snake_game_over_ts >= 1.5:
+                        score = len(snake_body) - 3
+                        save_high_score("snake", menu_username, score)
+                        cached_high_scores = load_high_scores("snake")
                         _exit_snake()
                     time.sleep(poll_interval)
                     continue
@@ -1449,27 +1649,31 @@ def run_loop(opts: argparse.Namespace):
                     if not alive:
                         snake_game_over = True
                         snake_game_over_ts = now
-                        offscreen = draw_snake_frame(offscreen, matrix, snake_body, snake_food, game_over=True)
+                        offscreen = draw_snake_frame(offscreen, matrix, renderer,
+                            snake_body, snake_food, game_over=True,
+                            game_x_offset=SNAKE_GAME_X_OFFSET, game_cols=SNAKE_GAME_COLS,
+                            username=menu_username, score=len(snake_body) - 3,
+                            high_scores=cached_high_scores)
                         time.sleep(poll_interval)
                         continue
                 if display_dirty:
-                    offscreen = draw_snake_frame(offscreen, matrix, snake_body, snake_food)
+                    offscreen = draw_snake_frame(offscreen, matrix, renderer,
+                        snake_body, snake_food,
+                        game_x_offset=SNAKE_GAME_X_OFFSET, game_cols=SNAKE_GAME_COLS,
+                        username=menu_username, score=len(snake_body) - 3,
+                        high_scores=cached_high_scores)
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
+            # --- Game menu mode ---
+            if game_mode == "menu":
+                if display_dirty:
+                    offscreen = draw_menu_frame(offscreen, matrix, renderer,
+                        menu_username, GAME_LIST, menu_selection)
                     display_dirty = False
                 time.sleep(poll_interval)
                 continue
             # --- Telegram message overlay ---
-            # Drain any newly received messages (keep the latest one)
-            try:
-                while True:
-                    new_msg = telegram_queue.get_nowait()
-                    telegram_msg = new_msg
-                    telegram_expires = now + 30.0
-                    # Wake screensaver so the message is visible
-                    if screensaver_active:
-                        screensaver_active = False
-                    display_dirty = True
-            except queue.Empty:
-                pass
             # Expire the overlay once 30 seconds are up
             if telegram_msg is not None and now >= telegram_expires:
                 telegram_msg = None
