@@ -865,6 +865,36 @@ def draw_menu_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', username: st
     return matrix.SwapOnVSync(off)
 
 
+def draw_pregame_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer', username: str, high_scores: List[Dict[str, Any]]):  # type: ignore[name-defined]
+    """Draw the pre-game screen with > Play and top 3 high scores."""
+    off.Fill(0, 0, 0)
+    _, draw_text, measure = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+    y = BOARD_MARGIN + 2
+
+    # Username line
+    name_label = _normalize_for_display(f"Name: {username}")
+    draw_text(BOARD_MARGIN + 1, y, name_label)
+    y += line_h + 3
+
+    # Play button
+    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display("> Play"))
+    y += line_h + 3
+
+    # Top 3 high scores
+    top3 = high_scores[:3]
+    if top3:
+        for i, entry in enumerate(top3):
+            hs_name = _normalize_for_display(entry['name'])
+            hs_text = f"{i + 1}. {hs_name} {entry['score']}"
+            draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(hs_text))
+            y += line_h
+            if y + CHAR_H > renderer.rows - BOARD_MARGIN:
+                break
+
+    return matrix.SwapOnVSync(off)
+
+
 def _start_telegram_poller(token: str, allowed_chat_ids: str, msg_queue: 'queue.Queue[str]') -> None:
     """Long-poll the Telegram Bot API in a daemon thread and push received messages to msg_queue."""
     allowed = {s.strip() for s in allowed_chat_ids.split(',') if s.strip()}
@@ -936,21 +966,12 @@ def draw_snake_frame(off, matrix: 'RGBMatrix', renderer: 'Renderer',  # type: ig
     draw_text(BOARD_MARGIN, y, score_text)
     y += line_h + 3  # gap before high scores
 
-    # High scores
-    if high_scores:
-        for entry in high_scores:
-            if y + CHAR_H > renderer.rows - BOARD_MARGIN:
-                break
-            hs_name = _normalize_for_display(entry['name'][:6])
-            hs_score = str(entry['score'])
-            hs_text = f"{hs_name} {hs_score}"
-            # Truncate if too wide
-            truncated_hs = ""
-            for ch in _normalize_for_display(hs_text):
-                if measure(truncated_hs + ch) > panel_width:
-                    break
-                truncated_hs += ch
-            draw_text(BOARD_MARGIN, y, truncated_hs)
+    # Top 3 high scores (numbers only)
+    top3 = (high_scores or [])[:3]
+    if top3:
+        for i, entry in enumerate(top3):
+            hs_text = _normalize_for_display(f"{i + 1}. {entry['score']}")
+            draw_text(BOARD_MARGIN, y, hs_text)
             y += line_h
 
     # Separator line (dim amber)
@@ -1066,9 +1087,9 @@ def run_loop(opts: argparse.Namespace):
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
     # Game system state
-    game_mode: str = "normal"  # "normal" | "menu" | "snake"
+    game_mode: str = "normal"  # "normal" | "menu" | "pregame" | "snake"
     menu_selection: int = 0    # index into GAME_LIST
-    menu_username: str = "Anonymous"
+    menu_username: str = "User"
     cached_high_scores: List[Dict[str, Any]] = []
 
     # Snake easter egg state
@@ -1076,8 +1097,8 @@ def run_loop(opts: argparse.Namespace):
     snake_dir: Tuple[int, int] = (1, 0)
     snake_food: Optional[Tuple[int, int]] = None
     snake_last_move: float = 0.0
-    snake_move_interval: float = 0.15      # seconds per step (~6.5 moves/sec)
-    snake_base_interval: float = 0.15      # base speed (reset each game)
+    snake_move_interval: float = 0.125     # seconds per step (~1.2x faster start)
+    snake_base_interval: float = 0.125     # base speed (0.15 / 1.2)
     snake_game_over: bool = False
     snake_game_over_ts: float = 0.0
 
@@ -1166,7 +1187,7 @@ def run_loop(opts: argparse.Namespace):
 
     def _exit_snake():
         nonlocal game_mode, display_dirty
-        game_mode = "menu"
+        game_mode = "pregame"
         display_dirty = True
 
     def _accept_rotation(direction: int):
@@ -1199,6 +1220,9 @@ def run_loop(opts: argparse.Namespace):
             menu_selection = (menu_selection + direction) % len(GAME_LIST)
             display_dirty = True
             last_rotation_action = now
+            return
+        # Pregame: ignore rotation
+        if game_mode == "pregame":
             return
         # Snake mode: dial steers the snake
         if game_mode == "snake":
@@ -1256,17 +1280,14 @@ def run_loop(opts: argparse.Namespace):
             return
         # Double-click: second press within 100–400ms window
         if (nowb - prev_button_time) < 0.4:
-            if game_mode == "snake":
-                # Save score and return to menu
-                score = len(snake_body) - 3
-                save_high_score("snake", menu_username, score)
-                cached_high_scores = load_high_scores("snake")
-                game_mode = "menu"
-                display_dirty = True
-            elif game_mode == "menu":
-                # Exit menu back to normal
+            if game_mode in ("snake", "menu", "pregame"):
+                # Double-click from any game screen → back to departures
+                if game_mode == "snake":
+                    score = len(snake_body) - 3
+                    save_high_score("snake", menu_username, score)
+                    cached_high_scores = load_high_scores("snake")
                 game_mode = "normal"
-                menu_username = "Anonymous"
+                menu_username = "User"
                 display_dirty = True
                 schedule_fetch(0.0)
             else:
@@ -1275,10 +1296,16 @@ def run_loop(opts: argparse.Namespace):
                 menu_selection = 0
                 display_dirty = True
             return
-        # Single click in menu: confirm selection and start game
+        # Single click in menu: go to pregame screen
         if game_mode == "menu":
             if GAME_LIST[menu_selection] == "Snake":
-                _enter_snake()
+                cached_high_scores = load_high_scores("snake")
+                game_mode = "pregame"
+                display_dirty = True
+            return
+        # Single click in pregame: start the game
+        if game_mode == "pregame":
+            _enter_snake()
             return
         # Single click while snake active: ignored
         if game_mode == "snake":
@@ -1619,9 +1646,9 @@ def run_loop(opts: argparse.Namespace):
             try:
                 while True:
                     new_msg = telegram_queue.get_nowait()
-                    if game_mode == "menu":
+                    if game_mode in ("menu", "pregame"):
                         # Capture username from telegram message
-                        menu_username = new_msg.strip()[:10] or "Anonymous"
+                        menu_username = new_msg.strip()[:6] or "User"
                         display_dirty = True
                     else:
                         telegram_msg = new_msg
@@ -1670,6 +1697,14 @@ def run_loop(opts: argparse.Namespace):
                 if display_dirty:
                     offscreen = draw_menu_frame(offscreen, matrix, renderer,
                         menu_username, GAME_LIST, menu_selection)
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
+            # --- Pre-game screen (high scores + Play) ---
+            if game_mode == "pregame":
+                if display_dirty:
+                    offscreen = draw_pregame_frame(offscreen, matrix, renderer,
+                        menu_username, cached_high_scores)
                     display_dirty = False
                 time.sleep(poll_interval)
                 continue
