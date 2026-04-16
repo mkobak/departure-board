@@ -256,7 +256,7 @@ def run_loop(opts: argparse.Namespace):
 
     def _on_rotate(raw_delta: int):  # noqa: D401
         nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
-        nonlocal snake_game_over_sel
+        nonlocal snake_game_over_sel, last_interaction
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -267,6 +267,7 @@ def run_loop(opts: argparse.Namespace):
         if now - last_rotation_action < rotation_action_cooldown:
             return
         last_rotation_accept = now
+        last_interaction = now  # any real rotation resets the screensaver idle timer
         # Screensaver: any rotation wakes it, regardless of current mode
         if screensaver_active:
             _wake_from_screensaver()
@@ -327,13 +328,14 @@ def run_loop(opts: argparse.Namespace):
         """Toggle page, wake screensaver, or double-click to enter/exit game menu."""
         nonlocal game_mode, menu_selection, menu_username, page_toggle, last_button_event
         nonlocal telegram_msg, telegram_expires, display_dirty, cached_high_scores
-        nonlocal snake_game_over_sel
+        nonlocal snake_game_over_sel, last_interaction
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
             return
         prev_button_time = last_button_event
         last_button_event = nowb
+        last_interaction = nowb  # any real button press resets the screensaver idle timer
         # Dismiss telegram overlay on any button press
         if telegram_msg is not None:
             telegram_msg = None
@@ -801,7 +803,10 @@ def run_loop(opts: argparse.Namespace):
                         username=menu_username, score=len(snake_body) - 3,
                         high_scores=cached_high_scores)
                     display_dirty = False
-                time.sleep(poll_interval)
+                # Sleep only until next move is due (not a fixed poll_interval),
+                # so move timing stays accurate at high speeds
+                time_until_move = max(0.005, (snake_last_move + snake_move_interval) - time.time())
+                time.sleep(min(time_until_move, poll_interval))
                 continue
             # --- Game menu mode ---
             if game_mode == "menu":
