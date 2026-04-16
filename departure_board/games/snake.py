@@ -35,6 +35,28 @@ def draw_pregame_frame(off, matrix, renderer: Renderer, high_scores: List[Dict[s
     return matrix.SwapOnVSync(off)
 
 
+def draw_game_over_frame(off, matrix, renderer: Renderer, score: int, sel: int, is_new_high_score: bool):
+    """Draw the game over screen with 4 lines: title, score, Play again, Exit."""
+    off.Fill(0, 0, 0)
+    _, draw_text, _ = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+    y = BOARD_MARGIN + 2
+
+    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display("Game over"))
+    y += line_h
+
+    score_line = f"New high score: {score}" if is_new_high_score else f"Score: {score}"
+    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(score_line))
+    y += line_h
+
+    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(">Play again" if sel == 0 else " Play again"))
+    y += line_h
+
+    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(">Exit" if sel == 1 else " Exit"))
+
+    return matrix.SwapOnVSync(off)
+
+
 def draw_snake_frame(off, matrix, renderer: Renderer,
                      snake_body: List[Tuple[int, int]], snake_food: Optional[Tuple[int, int]],
                      game_over: bool = False, cell: int = 2,

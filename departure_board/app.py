@@ -34,7 +34,7 @@ from .renderer import Renderer
 from .weather import WEATHER_CITIES, WeatherData, fetch_weather
 from .scores import load_high_scores, save_high_score
 from .games import GAME_LIST
-from .games.snake import draw_pregame_frame, draw_snake_frame
+from .games.snake import draw_pregame_frame, draw_snake_frame, draw_game_over_frame
 from .drawing import (
     draw_frame, draw_weather_frame, draw_screensaver_frame,
     draw_telegram_frame, draw_menu_frame,
@@ -140,10 +140,14 @@ def run_loop(opts: argparse.Namespace):
     snake_last_move: float = 0.0
     snake_move_interval: float = 0.125     # seconds per step
     snake_base_interval: float = 0.125     # starting interval
-    snake_min_interval: float = 0.05      # fastest interval (reached at score 30)
-    snake_max_score_for_speed: int = 30   # score at which max speed is reached
+    snake_min_interval: float = 0.05      # fastest interval (reached at score 50)
+    snake_max_score_for_speed: int = 50   # score at which max speed is reached
+    snake_speed_step: float = 0.0         # per-food interval decrease (computed at game start)
     snake_game_over: bool = False
     snake_game_over_ts: float = 0.0
+    snake_game_over_screen: bool = False  # True after red flash: showing Play again/Exit menu
+    snake_game_over_sel: int = 0          # 0 = Play again, 1 = Exit
+    snake_is_new_high_score: bool = False
 
     # Snake game grid dimensions (right 2/3 of screen)
     SNAKE_GAME_X_OFFSET = 44
@@ -207,20 +211,24 @@ def run_loop(opts: argparse.Namespace):
             snake_body.pop()
         else:
             snake_food = _snake_new_food()
-            # Linear speed progression: constant speedup per food, capped at min interval
+            # Smooth speed progression: constant decrease per food eaten, capped at min interval
             current_score = len(snake_body) - 3
-            t = min(1.0, current_score / snake_max_score_for_speed)
-            snake_move_interval = snake_base_interval - t * (snake_base_interval - snake_min_interval)
+            snake_move_interval = max(snake_min_interval, snake_base_interval - current_score * snake_speed_step)
         display_dirty = True
         return True
 
     def _enter_snake():
-        nonlocal game_mode, snake_body, snake_dir, snake_food, snake_move_interval
+        nonlocal game_mode, snake_body, snake_dir, snake_food, snake_move_interval, snake_speed_step
         nonlocal snake_last_move, snake_game_over, snake_game_over_ts, display_dirty, cached_high_scores
+        nonlocal snake_game_over_screen, snake_game_over_sel, snake_is_new_high_score
         game_mode = "snake"
         snake_game_over = False
         snake_game_over_ts = 0.0
+        snake_game_over_screen = False
+        snake_game_over_sel = 0
+        snake_is_new_high_score = False
         snake_move_interval = snake_base_interval
+        snake_speed_step = (snake_base_interval - snake_min_interval) / snake_max_score_for_speed
         cx, cy = SNAKE_GRID_COLS // 2, SNAKE_GRID_ROWS // 2
         snake_body = [(cx, cy), (cx - 1, cy), (cx - 2, cy)]
         snake_dir = (1, 0)  # start moving right
@@ -248,6 +256,7 @@ def run_loop(opts: argparse.Namespace):
 
     def _on_rotate(raw_delta: int):  # noqa: D401
         nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
+        nonlocal snake_game_over_sel
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -258,6 +267,11 @@ def run_loop(opts: argparse.Namespace):
         if now - last_rotation_action < rotation_action_cooldown:
             return
         last_rotation_accept = now
+        # Screensaver: any rotation wakes it, regardless of current mode
+        if screensaver_active:
+            _wake_from_screensaver()
+            last_rotation_action = now
+            return
         # Menu mode: dial scrolls the game selection
         if game_mode == "menu":
             direction = 1 if raw_delta > 0 else -1
@@ -268,14 +282,17 @@ def run_loop(opts: argparse.Namespace):
         # Pregame: ignore rotation
         if game_mode == "pregame":
             return
+        # Snake game over screen: dial switches between Play again / Exit
+        if game_mode == "snake" and snake_game_over_screen:
+            direction = 1 if raw_delta > 0 else -1
+            snake_game_over_sel = (snake_game_over_sel + direction) % 2
+            display_dirty = True
+            last_rotation_action = now
+            return
         # Snake mode: dial steers the snake
         if game_mode == "snake":
             direction = 1 if raw_delta > 0 else -1
             _snake_turn(direction)
-            last_rotation_action = now
-            return
-        if screensaver_active:
-            _wake_from_screensaver()
             last_rotation_action = now
             return
         _wake_from_screensaver()  # reset inactivity timer
@@ -310,6 +327,7 @@ def run_loop(opts: argparse.Namespace):
         """Toggle page, wake screensaver, or double-click to enter/exit game menu."""
         nonlocal game_mode, menu_selection, menu_username, page_toggle, last_button_event
         nonlocal telegram_msg, telegram_expires, display_dirty, cached_high_scores
+        nonlocal snake_game_over_sel
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
@@ -321,6 +339,10 @@ def run_loop(opts: argparse.Namespace):
             telegram_msg = None
             telegram_expires = 0.0
             display_dirty = True
+            return
+        # Screensaver: any button wakes it, regardless of current mode
+        if screensaver_active:
+            _wake_from_screensaver()
             return
         # Double-click: second press within 100-400ms window
         if (nowb - prev_button_time) < 0.4:
@@ -351,11 +373,15 @@ def run_loop(opts: argparse.Namespace):
         if game_mode == "pregame":
             _enter_snake()
             return
+        # Single click while snake game over screen active: confirm selection
+        if game_mode == "snake" and snake_game_over_screen:
+            if snake_game_over_sel == 0:
+                _enter_snake()
+            else:
+                _exit_snake()
+            return
         # Single click while snake active: ignored
         if game_mode == "snake":
-            return
-        if screensaver_active:
-            _wake_from_screensaver()
             return
         _wake_from_screensaver()  # reset inactivity timer
         _toggle_page()
@@ -703,27 +729,68 @@ def run_loop(opts: argparse.Namespace):
                         display_dirty = True
             except queue.Empty:
                 pass
+            # --- Screensaver activation check (runs from any mode) ---
+            if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
+                screensaver_active = True
+                display_dirty = True
+                last_rendered_minute = ''  # force redraw
+                screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
+                print(f"[screensaver] activated (dim={screensaver_brightness})", file=sys.stderr)
+            # --- Screensaver mode: show the time at a drifting random position ---
+            if screensaver_active:
+                now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
+                current_minute = now_txt_override or datetime.now().strftime('%H:%M')
+                if current_minute != last_rendered_minute:
+                    display_dirty = True
+                    screensaver_pos = screensaver_random_pos(renderer, current_minute)
+                if display_dirty:
+                    try:
+                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos, dim=screensaver_brightness)
+                        print(f"[screensaver] drew {current_minute} at {screensaver_pos}", file=sys.stderr)
+                    except Exception as _ss_err:  # noqa: BLE001
+                        import traceback
+                        print(f"[screensaver] draw error: {_ss_err}", file=sys.stderr)
+                        traceback.print_exc(file=sys.stderr)
+                    last_rendered_minute = current_minute
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
             # --- Snake game mode ---
             if game_mode == "snake":
                 if snake_game_over:
-                    # Show red flash for 1.5 seconds then save score and return to menu
-                    if now - snake_game_over_ts >= 1.5:
-                        score = len(snake_body) - 3
-                        save_high_score("snake", menu_username, score)
-                        cached_high_scores = load_high_scores("snake")
-                        _exit_snake()
+                    if snake_game_over_screen:
+                        # Interactive game over menu — wait for player input
+                        if display_dirty:
+                            score = len(snake_body) - 3
+                            offscreen = draw_game_over_frame(offscreen, matrix, renderer,
+                                score, snake_game_over_sel, snake_is_new_high_score)
+                            display_dirty = False
+                    else:
+                        # Red flash phase: show for 0.5s then transition to game over menu
+                        if now - snake_game_over_ts >= 0.5:
+                            snake_game_over_screen = True
+                            display_dirty = True
                     time.sleep(poll_interval)
                     continue
                 if now >= snake_last_move + snake_move_interval:
-                    snake_last_move = now
+                    # Deterministic timing: advance by interval (avoids drift accumulation)
+                    if snake_last_move < now - snake_move_interval:
+                        snake_last_move = now - snake_move_interval
+                    snake_last_move += snake_move_interval
                     alive = _snake_step()
                     if not alive:
+                        score = len(snake_body) - 3
+                        prev_best = cached_high_scores[0]['score'] if cached_high_scores else -1
+                        snake_is_new_high_score = score > prev_best
+                        save_high_score("snake", menu_username, score)
+                        cached_high_scores = load_high_scores("snake")
                         snake_game_over = True
                         snake_game_over_ts = now
+                        snake_game_over_screen = False
                         offscreen = draw_snake_frame(offscreen, matrix, renderer,
                             snake_body, snake_food, game_over=True,
                             game_x_offset=SNAKE_GAME_X_OFFSET, game_cols=SNAKE_GAME_COLS,
-                            username=menu_username, score=len(snake_body) - 3,
+                            username=menu_username, score=score,
                             high_scores=cached_high_scores)
                         time.sleep(poll_interval)
                         continue
@@ -765,32 +832,6 @@ def run_loop(opts: argparse.Namespace):
                 time.sleep(poll_interval)
                 continue
 
-            # --- Screensaver activation check ---
-            if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
-                screensaver_active = True
-                display_dirty = True
-                last_rendered_minute = ''  # force redraw
-                screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
-                print(f"[screensaver] activated (dim={screensaver_brightness})", file=sys.stderr)
-            # --- Screensaver mode: show the time at a drifting random position ---
-            if screensaver_active:
-                now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
-                current_minute = now_txt_override or datetime.now().strftime('%H:%M')
-                if current_minute != last_rendered_minute:
-                    display_dirty = True
-                    screensaver_pos = screensaver_random_pos(renderer, current_minute)
-                if display_dirty:
-                    try:
-                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos, dim=screensaver_brightness)
-                        print(f"[screensaver] drew {current_minute} at {screensaver_pos}", file=sys.stderr)
-                    except Exception as _ss_err:  # noqa: BLE001
-                        import traceback
-                        print(f"[screensaver] draw error: {_ss_err}", file=sys.stderr)
-                        traceback.print_exc(file=sys.stderr)
-                    last_rendered_minute = current_minute
-                    display_dirty = False
-                time.sleep(poll_interval)
-                continue
             # --- Normal mode ---
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
