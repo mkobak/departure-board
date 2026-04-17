@@ -184,13 +184,16 @@ def run_loop(opts: argparse.Namespace):
     breakout_game_over_sel: int = 0
     breakout_is_new_high_score: bool = False
     BREAKOUT_PADDLE_STEP_PX: int = 3
-    # Anti-bounce filter: encoders emit spurious reversed pulses at high spin speeds.
-    # If a pulse arrives with direction opposite to the last one within this window,
-    # treat it as mechanical noise and ignore it. Slow/deliberate rotations (>this window
-    # between pulses) always go through, so intentional reversals still work.
-    breakout_paddle_last_dir: int = 0
+    # Paddle direction stabilization.
+    # Quadrature encoders sample DT on CLK edges; at high rotation speeds that
+    # sample is unreliable (up to ~50% of pulses get the wrong direction bit).
+    # Strategy: a pulse commits a new direction only when it's well-separated in
+    # time from the previous pulse (slow/deliberate). Pulses arriving within the
+    # "fast spin" window reuse the last committed direction, so a continuous
+    # high-speed spin always moves the paddle one way regardless of DT noise.
+    breakout_paddle_committed_dir: int = 0
     breakout_paddle_last_pulse_ts: float = 0.0
-    BREAKOUT_PADDLE_REVERSAL_FILTER_S: float = 0.12
+    BREAKOUT_FAST_SPIN_GAP_S: float = 0.1
 
     # Telegram message overlay
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -551,7 +554,7 @@ def run_loop(opts: argparse.Namespace):
         nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
         nonlocal snake_game_over_sel, last_interaction
         nonlocal breakout_game_over_sel, breakout_paddle_x, breakout_ball_x, breakout_ball_y
-        nonlocal breakout_paddle_last_dir, breakout_paddle_last_pulse_ts
+        nonlocal breakout_paddle_committed_dir, breakout_paddle_last_pulse_ts
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -567,16 +570,17 @@ def run_loop(opts: argparse.Namespace):
             return
         # Breakout live paddle: every detent counts — bypass the action cooldown
         if game_mode == "breakout" and not breakout_game_over:
-            direction = 1 if raw_delta > 0 else -1
-            # Anti-bounce: reject opposite-direction pulses that arrive very quickly
-            # after the last one. Mechanical encoders emit spurious reversed pulses
-            # on fast spins; genuine direction changes occur with a human-scale pause.
-            if (breakout_paddle_last_dir != 0
-                    and direction == -breakout_paddle_last_dir
-                    and (now - breakout_paddle_last_pulse_ts) < BREAKOUT_PADDLE_REVERSAL_FILTER_S):
-                return
-            breakout_paddle_last_dir = direction
+            raw_dir = 1 if raw_delta > 0 else -1
+            dt_pulse = now - breakout_paddle_last_pulse_ts
             breakout_paddle_last_pulse_ts = now
+            # Commit a new direction only when the pulse is slow/isolated (DT is
+            # reliable then) or when no direction is committed yet. Pulses within
+            # the fast-spin window inherit the last committed direction — this
+            # makes a continuous fast spin move the paddle consistently even when
+            # the encoder emits bursts of noisy/reversed pulses.
+            if dt_pulse > BREAKOUT_FAST_SPIN_GAP_S or breakout_paddle_committed_dir == 0:
+                breakout_paddle_committed_dir = raw_dir
+            direction = breakout_paddle_committed_dir
             max_x = bo.PLAY_W - bo.PADDLE_W
             breakout_paddle_x = max(0, min(max_x, breakout_paddle_x + direction * BREAKOUT_PADDLE_STEP_PX))
             if breakout_ball_stuck:
