@@ -15,12 +15,13 @@ PLAY_W = 84
 PLAY_H = 64
 
 BRICK_ROWS = 5
-BRICK_COLS = 7
+BRICK_COLS = 6
 BRICK_W = 12
 BRICK_H = 3
-BRICK_TOP = 2          # first brick row y offset
-BRICK_GAP_X = 0        # bricks sit flush; border colors give visual separation
-BRICK_GAP_Y = 1
+BRICK_TOP = 8          # first brick row y offset (top wall gap for ball tunneling)
+BRICK_SIDE_MARGIN = 6  # gap between play-area edge and outermost brick column
+BRICK_GAP_X = 0        # bricks sit flush horizontally; row colors give separation
+BRICK_GAP_Y = 0
 
 PADDLE_W = 14
 PADDLE_H = 2
@@ -157,7 +158,7 @@ def draw_breakout_frame(off, matrix, renderer: Renderer,
         for col_idx, alive in enumerate(row):
             if not alive:
                 continue
-            bx = PLAY_X + col_idx * (BRICK_W + BRICK_GAP_X)
+            bx = PLAY_X + BRICK_SIDE_MARGIN + col_idx * (BRICK_W + BRICK_GAP_X)
             _draw_rect(off, bx, by, BRICK_W, BRICK_H, color, cols, rows)
 
     # Paddle (amber)

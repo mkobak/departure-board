@@ -184,6 +184,13 @@ def run_loop(opts: argparse.Namespace):
     breakout_game_over_sel: int = 0
     breakout_is_new_high_score: bool = False
     BREAKOUT_PADDLE_STEP_PX: int = 3
+    # Anti-bounce filter: encoders emit spurious reversed pulses at high spin speeds.
+    # If a pulse arrives with direction opposite to the last one within this window,
+    # treat it as mechanical noise and ignore it. Slow/deliberate rotations (>this window
+    # between pulses) always go through, so intentional reversals still work.
+    breakout_paddle_last_dir: int = 0
+    breakout_paddle_last_pulse_ts: float = 0.0
+    BREAKOUT_PADDLE_REVERSAL_FILTER_S: float = 0.12
 
     # Telegram message overlay
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -318,8 +325,15 @@ def run_loop(opts: argparse.Namespace):
         paddle_center = breakout_paddle_x + bo.PADDLE_W / 2.0
         offset = ball_center - paddle_center
         half = bo.PADDLE_W / 2.0
-        # Normalize to [-1, 1], then map to max 60-degree angle from vertical
         norm = max(-1.0, min(1.0, offset / half))
+        # Enforce minimum horizontal bias so the ball never returns straight up.
+        # A straight-up ball leads to paddle-center ping-pong and stuck states.
+        min_norm = 0.2
+        if abs(norm) < min_norm:
+            if norm == 0:
+                norm = min_norm if breakout_ball_vx >= 0 else -min_norm
+            else:
+                norm = min_norm if norm > 0 else -min_norm
         max_angle = math.radians(60)
         angle = norm * max_angle
         speed = math.hypot(breakout_ball_vx, breakout_ball_vy) or _breakout_current_speed()
@@ -327,7 +341,7 @@ def run_loop(opts: argparse.Namespace):
         breakout_ball_vy = -abs(speed * math.cos(angle))
 
     def _breakout_brick_rect(col: int, row: int) -> Tuple[int, int, int, int]:
-        x = col * (bo.BRICK_W + bo.BRICK_GAP_X)
+        x = bo.BRICK_SIDE_MARGIN + col * (bo.BRICK_W + bo.BRICK_GAP_X)
         y = bo.BRICK_TOP + row * (bo.BRICK_H + bo.BRICK_GAP_Y)
         return x, y, bo.BRICK_W, bo.BRICK_H
 
@@ -438,6 +452,7 @@ def run_loop(opts: argparse.Namespace):
     def _breakout_step(now: float) -> bool:
         """Advance physics by tick_interval. Returns False if game over (lives exhausted)."""
         nonlocal breakout_last_tick, breakout_lives, display_dirty
+        nonlocal breakout_ball_vx, breakout_ball_vy
         breakout_last_tick = now
         if breakout_ball_stuck:
             # Ball follows paddle while stuck
@@ -445,18 +460,33 @@ def run_loop(opts: argparse.Namespace):
             display_dirty = True
             return True
 
-        dt = breakout_tick_interval
-        total_dx = breakout_ball_vx * dt
-        total_dy = breakout_ball_vy * dt
-        # Substep to cap motion per substep at 0.5 px
         import math
-        max_per_step = 0.5
-        dist = math.hypot(total_dx, total_dy)
-        substeps = max(1, int(math.ceil(dist / max_per_step)))
-        step_dx = total_dx / substeps
-        step_dy = total_dy / substeps
+        # Renormalize speed to the current target so floating-point drift doesn't
+        # gradually stall the ball (which caused it to slow down and stop in corners).
+        target_speed = _breakout_current_speed()
+        cur_speed = math.hypot(breakout_ball_vx, breakout_ball_vy)
+        if cur_speed > 1e-6:
+            breakout_ball_vx *= target_speed / cur_speed
+            breakout_ball_vy *= target_speed / cur_speed
+        else:
+            # Velocity collapsed — re-launch from paddle to recover.
+            _breakout_reset_ball()
+            display_dirty = True
+            return True
 
-        for _ in range(substeps):
+        remaining_t = breakout_tick_interval
+        max_step_dist = 0.5
+        # Safety cap on substeps (prevents infinite loops if geometry misbehaves).
+        for _ in range(256):
+            if remaining_t <= 1e-6:
+                break
+            speed = math.hypot(breakout_ball_vx, breakout_ball_vy)
+            if speed < 1e-6:
+                break
+            # Step size that caps per-substep distance at max_step_dist, using CURRENT velocity
+            step_t = min(remaining_t, max_step_dist / speed)
+            step_dx = breakout_ball_vx * step_t
+            step_dy = breakout_ball_vy * step_t
             alive = _breakout_advance_substep(step_dx, step_dy)
             if not alive:
                 breakout_lives -= 1
@@ -466,6 +496,7 @@ def run_loop(opts: argparse.Namespace):
                 _breakout_reset_ball()
                 display_dirty = True
                 return True
+            remaining_t -= step_t
 
         if _breakout_all_cleared():
             _breakout_new_level(bump_level=True)
@@ -520,6 +551,7 @@ def run_loop(opts: argparse.Namespace):
         nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
         nonlocal snake_game_over_sel, last_interaction
         nonlocal breakout_game_over_sel, breakout_paddle_x, breakout_ball_x, breakout_ball_y
+        nonlocal breakout_paddle_last_dir, breakout_paddle_last_pulse_ts
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -536,6 +568,15 @@ def run_loop(opts: argparse.Namespace):
         # Breakout live paddle: every detent counts — bypass the action cooldown
         if game_mode == "breakout" and not breakout_game_over:
             direction = 1 if raw_delta > 0 else -1
+            # Anti-bounce: reject opposite-direction pulses that arrive very quickly
+            # after the last one. Mechanical encoders emit spurious reversed pulses
+            # on fast spins; genuine direction changes occur with a human-scale pause.
+            if (breakout_paddle_last_dir != 0
+                    and direction == -breakout_paddle_last_dir
+                    and (now - breakout_paddle_last_pulse_ts) < BREAKOUT_PADDLE_REVERSAL_FILTER_S):
+                return
+            breakout_paddle_last_dir = direction
+            breakout_paddle_last_pulse_ts = now
             max_x = bo.PLAY_W - bo.PADDLE_W
             breakout_paddle_x = max(0, min(max_x, breakout_paddle_x + direction * BREAKOUT_PADDLE_STEP_PX))
             if breakout_ball_stuck:
