@@ -35,6 +35,12 @@ from .weather import WEATHER_CITIES, WeatherData, fetch_weather
 from .scores import load_high_scores, save_high_score
 from .games import GAME_LIST
 from .games.snake import draw_pregame_frame, draw_snake_frame, draw_game_over_frame
+from .games import breakout as bo
+from .games.breakout import (
+    draw_pregame_frame as draw_breakout_pregame_frame,
+    draw_game_over_frame as draw_breakout_game_over_frame,
+    draw_breakout_frame,
+)
 from .drawing import (
     draw_frame, draw_weather_frame, draw_screensaver_frame,
     draw_telegram_frame, draw_menu_frame,
@@ -128,10 +134,11 @@ def run_loop(opts: argparse.Namespace):
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
     # Game system state
-    game_mode: str = "normal"  # "normal" | "menu" | "pregame" | "snake"
+    game_mode: str = "normal"  # "normal" | "menu" | "pregame" | "snake" | "breakout"
     menu_selection: int = 0    # index into GAME_LIST
     menu_username: str = "User"
     cached_high_scores: List[Dict[str, Any]] = []
+    pregame_game: str = "Snake"  # which game the current pregame screen represents
 
     # Snake easter egg state
     snake_body: List[Tuple[int, int]] = []
@@ -154,6 +161,29 @@ def run_loop(opts: argparse.Namespace):
     SNAKE_GAME_COLS = opts.cols - SNAKE_GAME_X_OFFSET  # 84
     SNAKE_GRID_COLS = SNAKE_GAME_COLS // 2  # 42
     SNAKE_GRID_ROWS = opts.rows // 2        # 32
+
+    # Breakout easter egg state
+    breakout_ball_x: float = 0.0        # top-left of 2x2 ball within play area (0..PLAY_W-2)
+    breakout_ball_y: float = 0.0
+    breakout_ball_vx: float = 0.0       # pixels per second
+    breakout_ball_vy: float = 0.0
+    breakout_paddle_x: int = 0          # left edge within play area (0..PLAY_W-PADDLE_W)
+    breakout_bricks: List[List[int]] = []  # 2D grid: 1 = alive, 0 = broken
+    breakout_lives: int = 3
+    breakout_score: int = 0
+    breakout_level: int = 1
+    breakout_ball_stuck: bool = True    # glued to paddle; button launches
+    breakout_last_tick: float = 0.0
+    breakout_tick_interval: float = 0.02  # 50 Hz physics
+    breakout_base_speed: float = 30.0     # pixels per second at level 1
+    breakout_level_speed_bump: float = 5.0
+    breakout_max_speed: float = 60.0
+    breakout_game_over: bool = False
+    breakout_game_over_ts: float = 0.0
+    breakout_game_over_screen: bool = False
+    breakout_game_over_sel: int = 0
+    breakout_is_new_high_score: bool = False
+    BREAKOUT_PADDLE_STEP_PX: int = 3
 
     # Telegram message overlay
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -242,6 +272,238 @@ def run_loop(opts: argparse.Namespace):
         game_mode = "pregame"
         display_dirty = True
 
+    # --- Breakout game helpers ---
+
+    def _breakout_current_speed() -> float:
+        spd = breakout_base_speed + (breakout_level - 1) * breakout_level_speed_bump
+        return min(spd, breakout_max_speed)
+
+    def _breakout_reset_ball():
+        """Glue ball to paddle top-center, clear velocity."""
+        nonlocal breakout_ball_x, breakout_ball_y, breakout_ball_vx, breakout_ball_vy, breakout_ball_stuck
+        breakout_ball_x = float(breakout_paddle_x + (bo.PADDLE_W - bo.BALL_SIZE) // 2)
+        breakout_ball_y = float(bo.PADDLE_Y - bo.BALL_SIZE)
+        breakout_ball_vx = 0.0
+        breakout_ball_vy = 0.0
+        breakout_ball_stuck = True
+
+    def _breakout_launch():
+        """Launch ball upward with a slight random horizontal angle."""
+        nonlocal breakout_ball_vx, breakout_ball_vy, breakout_ball_stuck
+        speed = _breakout_current_speed()
+        # Angle in radians measured from straight up: pick within +/- 30 degrees
+        import math
+        angle = random.uniform(-math.pi / 6, math.pi / 6)
+        breakout_ball_vx = speed * math.sin(angle)
+        breakout_ball_vy = -speed * math.cos(angle)
+        breakout_ball_stuck = False
+
+    def _breakout_new_level(bump_level: bool):
+        """Populate bricks, reset ball position. Optionally bump level for speed ramp."""
+        nonlocal breakout_bricks, breakout_level
+        if bump_level:
+            breakout_level += 1
+        breakout_bricks = [[1] * bo.BRICK_COLS for _ in range(bo.BRICK_ROWS)]
+        _breakout_reset_ball()
+
+    def _breakout_center_paddle():
+        nonlocal breakout_paddle_x
+        breakout_paddle_x = (bo.PLAY_W - bo.PADDLE_W) // 2
+
+    def _breakout_reflect_off_paddle():
+        """Redirect ball based on where it hit the paddle: edges -> steep angles."""
+        nonlocal breakout_ball_vx, breakout_ball_vy
+        import math
+        ball_center = breakout_ball_x + bo.BALL_SIZE / 2.0
+        paddle_center = breakout_paddle_x + bo.PADDLE_W / 2.0
+        offset = ball_center - paddle_center
+        half = bo.PADDLE_W / 2.0
+        # Normalize to [-1, 1], then map to max 60-degree angle from vertical
+        norm = max(-1.0, min(1.0, offset / half))
+        max_angle = math.radians(60)
+        angle = norm * max_angle
+        speed = math.hypot(breakout_ball_vx, breakout_ball_vy) or _breakout_current_speed()
+        breakout_ball_vx = speed * math.sin(angle)
+        breakout_ball_vy = -abs(speed * math.cos(angle))
+
+    def _breakout_brick_rect(col: int, row: int) -> Tuple[int, int, int, int]:
+        x = col * (bo.BRICK_W + bo.BRICK_GAP_X)
+        y = bo.BRICK_TOP + row * (bo.BRICK_H + bo.BRICK_GAP_Y)
+        return x, y, bo.BRICK_W, bo.BRICK_H
+
+    def _breakout_all_cleared() -> bool:
+        for row in breakout_bricks:
+            if any(row):
+                return False
+        return True
+
+    def _breakout_advance_substep(dx: float, dy: float) -> bool:
+        """Move the ball by (dx, dy) with collision resolution.
+
+        Returns False if the ball fell past the paddle (life lost).
+        """
+        nonlocal breakout_ball_x, breakout_ball_y, breakout_ball_vx, breakout_ball_vy, breakout_score
+
+        prev_x = breakout_ball_x
+        prev_y = breakout_ball_y
+        new_x = prev_x + dx
+        new_y = prev_y + dy
+
+        # --- Wall collisions (left/right/top) ---
+        if new_x < 0:
+            new_x = -new_x
+            breakout_ball_vx = -breakout_ball_vx
+        elif new_x > bo.PLAY_W - bo.BALL_SIZE:
+            over = new_x - (bo.PLAY_W - bo.BALL_SIZE)
+            new_x = (bo.PLAY_W - bo.BALL_SIZE) - over
+            breakout_ball_vx = -breakout_ball_vx
+        if new_y < 0:
+            new_y = -new_y
+            breakout_ball_vy = -breakout_ball_vy
+
+        # --- Paddle collision (only when descending) ---
+        if breakout_ball_vy > 0:
+            ball_bottom_prev = prev_y + bo.BALL_SIZE
+            ball_bottom_new = new_y + bo.BALL_SIZE
+            paddle_top = bo.PADDLE_Y
+            if ball_bottom_prev <= paddle_top <= ball_bottom_new:
+                # Check horizontal overlap at the moment of crossing
+                if (new_x + bo.BALL_SIZE > breakout_paddle_x) and (new_x < breakout_paddle_x + bo.PADDLE_W):
+                    new_y = paddle_top - bo.BALL_SIZE
+                    breakout_ball_x = new_x
+                    breakout_ball_y = new_y
+                    _breakout_reflect_off_paddle()
+                    return True
+
+        # --- Ball fell past paddle (bottom of play area) ---
+        if new_y >= bo.PLAY_H:
+            breakout_ball_x = new_x
+            breakout_ball_y = new_y
+            return False
+
+        # --- Brick collision ---
+        # Find the first brick whose rect overlaps the ball's new AABB.
+        ball_rect = (new_x, new_y, bo.BALL_SIZE, bo.BALL_SIZE)
+        hit_brick = None
+        for row_idx, row in enumerate(breakout_bricks):
+            for col_idx, alive in enumerate(row):
+                if not alive:
+                    continue
+                bx, by, bw, bh = _breakout_brick_rect(col_idx, row_idx)
+                if (ball_rect[0] < bx + bw and ball_rect[0] + ball_rect[2] > bx and
+                        ball_rect[1] < by + bh and ball_rect[1] + ball_rect[3] > by):
+                    hit_brick = (col_idx, row_idx, bx, by, bw, bh)
+                    break
+            if hit_brick is not None:
+                break
+
+        if hit_brick is not None:
+            col_idx, row_idx, bx, by, bw, bh = hit_brick
+            # Decide axis of reflection by comparing prior overlap on each axis
+            prev_overlap_x = (prev_x < bx + bw) and (prev_x + bo.BALL_SIZE > bx)
+            prev_overlap_y = (prev_y < by + bh) and (prev_y + bo.BALL_SIZE > by)
+            if prev_overlap_x and not prev_overlap_y:
+                # Came vertically into the brick
+                breakout_ball_vy = -breakout_ball_vy
+                if dy > 0:
+                    new_y = by - bo.BALL_SIZE
+                else:
+                    new_y = by + bh
+            elif prev_overlap_y and not prev_overlap_x:
+                breakout_ball_vx = -breakout_ball_vx
+                if dx > 0:
+                    new_x = bx - bo.BALL_SIZE
+                else:
+                    new_x = bx + bw
+            else:
+                # Corner hit: flip both
+                breakout_ball_vx = -breakout_ball_vx
+                breakout_ball_vy = -breakout_ball_vy
+                if dx > 0:
+                    new_x = bx - bo.BALL_SIZE
+                elif dx < 0:
+                    new_x = bx + bw
+                if dy > 0:
+                    new_y = by - bo.BALL_SIZE
+                elif dy < 0:
+                    new_y = by + bh
+            breakout_bricks[row_idx][col_idx] = 0
+            tier_idx = row_idx if row_idx < len(bo.ROW_TIERS) else len(bo.ROW_TIERS) - 1
+            breakout_score += bo.ROW_TIERS[tier_idx][1]
+
+        breakout_ball_x = new_x
+        breakout_ball_y = new_y
+        return True
+
+    def _breakout_step(now: float) -> bool:
+        """Advance physics by tick_interval. Returns False if game over (lives exhausted)."""
+        nonlocal breakout_last_tick, breakout_lives, display_dirty
+        breakout_last_tick = now
+        if breakout_ball_stuck:
+            # Ball follows paddle while stuck
+            _breakout_reset_ball_on_paddle_only()
+            display_dirty = True
+            return True
+
+        dt = breakout_tick_interval
+        total_dx = breakout_ball_vx * dt
+        total_dy = breakout_ball_vy * dt
+        # Substep to cap motion per substep at 0.5 px
+        import math
+        max_per_step = 0.5
+        dist = math.hypot(total_dx, total_dy)
+        substeps = max(1, int(math.ceil(dist / max_per_step)))
+        step_dx = total_dx / substeps
+        step_dy = total_dy / substeps
+
+        for _ in range(substeps):
+            alive = _breakout_advance_substep(step_dx, step_dy)
+            if not alive:
+                breakout_lives -= 1
+                if breakout_lives <= 0:
+                    display_dirty = True
+                    return False
+                _breakout_reset_ball()
+                display_dirty = True
+                return True
+
+        if _breakout_all_cleared():
+            _breakout_new_level(bump_level=True)
+
+        display_dirty = True
+        return True
+
+    def _breakout_reset_ball_on_paddle_only():
+        """While ball is stuck, keep it glued to the paddle's current position."""
+        nonlocal breakout_ball_x, breakout_ball_y
+        breakout_ball_x = float(breakout_paddle_x + (bo.PADDLE_W - bo.BALL_SIZE) // 2)
+        breakout_ball_y = float(bo.PADDLE_Y - bo.BALL_SIZE)
+
+    def _enter_breakout():
+        nonlocal game_mode, breakout_lives, breakout_score, breakout_level
+        nonlocal breakout_game_over, breakout_game_over_ts, breakout_game_over_screen
+        nonlocal breakout_game_over_sel, breakout_is_new_high_score
+        nonlocal breakout_last_tick, display_dirty, cached_high_scores
+        game_mode = "breakout"
+        breakout_lives = 3
+        breakout_score = 0
+        breakout_level = 1
+        breakout_game_over = False
+        breakout_game_over_ts = 0.0
+        breakout_game_over_screen = False
+        breakout_game_over_sel = 0
+        breakout_is_new_high_score = False
+        breakout_last_tick = time.time()
+        _breakout_center_paddle()
+        _breakout_new_level(bump_level=False)
+        cached_high_scores = load_high_scores("breakout")
+        display_dirty = True
+
+    def _exit_breakout():
+        nonlocal game_mode, display_dirty
+        game_mode = "pregame"
+        display_dirty = True
+
     def _accept_rotation(direction: int):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
@@ -257,21 +519,32 @@ def run_loop(opts: argparse.Namespace):
     def _on_rotate(raw_delta: int):  # noqa: D401
         nonlocal last_rotation_accept, last_rotation_action, menu_selection, display_dirty
         nonlocal snake_game_over_sel, last_interaction
+        nonlocal breakout_game_over_sel, breakout_paddle_x, breakout_ball_x, breakout_ball_y
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
             return
         if now - last_rotation_accept < rotation_min_interval:
             return  # debounce / noise filter
-        # Coalesce multiple pulses from one physical twist
-        if now - last_rotation_action < rotation_action_cooldown:
-            return
         last_rotation_accept = now
         last_interaction = now  # any real rotation resets the screensaver idle timer
         # Screensaver: any rotation wakes it, regardless of current mode
         if screensaver_active:
             _wake_from_screensaver()
             last_rotation_action = now
+            return
+        # Breakout live paddle: every detent counts — bypass the action cooldown
+        if game_mode == "breakout" and not breakout_game_over:
+            direction = 1 if raw_delta > 0 else -1
+            max_x = bo.PLAY_W - bo.PADDLE_W
+            breakout_paddle_x = max(0, min(max_x, breakout_paddle_x + direction * BREAKOUT_PADDLE_STEP_PX))
+            if breakout_ball_stuck:
+                breakout_ball_x = float(breakout_paddle_x + (bo.PADDLE_W - bo.BALL_SIZE) // 2)
+                breakout_ball_y = float(bo.PADDLE_Y - bo.BALL_SIZE)
+            display_dirty = True
+            return
+        # All other modes: coalesce multiple pulses from one physical twist
+        if now - last_rotation_action < rotation_action_cooldown:
             return
         # Menu mode: dial scrolls the game selection
         if game_mode == "menu":
@@ -294,6 +567,13 @@ def run_loop(opts: argparse.Namespace):
         if game_mode == "snake":
             direction = 1 if raw_delta > 0 else -1
             _snake_turn(direction)
+            last_rotation_action = now
+            return
+        # Breakout game over screen: dial switches between Play again / Exit
+        if game_mode == "breakout" and breakout_game_over_screen:
+            direction = 1 if raw_delta > 0 else -1
+            breakout_game_over_sel = (breakout_game_over_sel + direction) % 2
+            display_dirty = True
             last_rotation_action = now
             return
         _wake_from_screensaver()  # reset inactivity timer
@@ -328,7 +608,7 @@ def run_loop(opts: argparse.Namespace):
         """Toggle page, wake screensaver, or double-click to enter/exit game menu."""
         nonlocal game_mode, menu_selection, menu_username, page_toggle, last_button_event
         nonlocal telegram_msg, telegram_expires, display_dirty, cached_high_scores
-        nonlocal snake_game_over_sel, last_interaction
+        nonlocal snake_game_over_sel, last_interaction, pregame_game
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
@@ -348,12 +628,15 @@ def run_loop(opts: argparse.Namespace):
             return
         # Double-click: second press within 100-400ms window
         if (nowb - prev_button_time) < 0.4:
-            if game_mode in ("snake", "menu", "pregame"):
+            if game_mode in ("snake", "breakout", "menu", "pregame"):
                 # Double-click from any game screen -> back to departures
                 if game_mode == "snake":
                     score = len(snake_body) - 3
                     save_high_score("snake", menu_username, score)
                     cached_high_scores = load_high_scores("snake")
+                elif game_mode == "breakout":
+                    save_high_score("breakout", menu_username, breakout_score)
+                    cached_high_scores = load_high_scores("breakout")
                 game_mode = "normal"
                 menu_username = "User"
                 display_dirty = True
@@ -364,16 +647,26 @@ def run_loop(opts: argparse.Namespace):
                 menu_selection = 0
                 display_dirty = True
             return
-        # Single click in menu: go to pregame screen
+        # Single click in menu: go to pregame screen for the selected game
         if game_mode == "menu":
-            if GAME_LIST[menu_selection] == "Snake":
+            selected = GAME_LIST[menu_selection]
+            if selected == "Snake":
                 cached_high_scores = load_high_scores("snake")
+                pregame_game = "Snake"
+                game_mode = "pregame"
+                display_dirty = True
+            elif selected == "Breakout":
+                cached_high_scores = load_high_scores("breakout")
+                pregame_game = "Breakout"
                 game_mode = "pregame"
                 display_dirty = True
             return
-        # Single click in pregame: start the game
+        # Single click in pregame: start the selected game
         if game_mode == "pregame":
-            _enter_snake()
+            if pregame_game == "Breakout":
+                _enter_breakout()
+            else:
+                _enter_snake()
             return
         # Single click while snake game over screen active: confirm selection
         if game_mode == "snake" and snake_game_over_screen:
@@ -384,6 +677,19 @@ def run_loop(opts: argparse.Namespace):
             return
         # Single click while snake active: ignored
         if game_mode == "snake":
+            return
+        # Single click while breakout game over screen active: confirm selection
+        if game_mode == "breakout" and breakout_game_over_screen:
+            if breakout_game_over_sel == 0:
+                _enter_breakout()
+            else:
+                _exit_breakout()
+            return
+        # Single click while breakout active: launch the ball if stuck, otherwise ignored
+        if game_mode == "breakout":
+            if breakout_ball_stuck:
+                _breakout_launch()
+                display_dirty = True
             return
         _wake_from_screensaver()  # reset inactivity timer
         _toggle_page()
@@ -819,10 +1125,56 @@ def run_loop(opts: argparse.Namespace):
             # --- Pre-game screen (high scores + Play) ---
             if game_mode == "pregame":
                 if display_dirty:
-                    offscreen = draw_pregame_frame(offscreen, matrix, renderer,
-                        cached_high_scores)
+                    if pregame_game == "Breakout":
+                        offscreen = draw_breakout_pregame_frame(offscreen, matrix, renderer,
+                            cached_high_scores)
+                    else:
+                        offscreen = draw_pregame_frame(offscreen, matrix, renderer,
+                            cached_high_scores)
                     display_dirty = False
                 time.sleep(poll_interval)
+                continue
+            # --- Breakout game mode ---
+            if game_mode == "breakout":
+                if breakout_game_over:
+                    if breakout_game_over_screen:
+                        if display_dirty:
+                            offscreen = draw_breakout_game_over_frame(offscreen, matrix, renderer,
+                                breakout_score, breakout_game_over_sel, breakout_is_new_high_score)
+                            display_dirty = False
+                    else:
+                        # Red flash phase: show for 0.5s then transition to game over menu
+                        if now - breakout_game_over_ts >= 0.5:
+                            breakout_game_over_screen = True
+                            display_dirty = True
+                    time.sleep(poll_interval)
+                    continue
+                # Physics tick
+                if now >= breakout_last_tick + breakout_tick_interval:
+                    alive = _breakout_step(now)
+                    if not alive:
+                        prev_best = cached_high_scores[0]['score'] if cached_high_scores else -1
+                        breakout_is_new_high_score = breakout_score > prev_best
+                        save_high_score("breakout", menu_username, breakout_score)
+                        cached_high_scores = load_high_scores("breakout")
+                        breakout_game_over = True
+                        breakout_game_over_ts = now
+                        breakout_game_over_screen = False
+                        offscreen = draw_breakout_frame(offscreen, matrix, renderer,
+                            (breakout_ball_x, breakout_ball_y), breakout_paddle_x,
+                            breakout_bricks, lives=breakout_lives, score=breakout_score,
+                            username=menu_username, high_scores=cached_high_scores,
+                            game_over=True)
+                        time.sleep(poll_interval)
+                        continue
+                if display_dirty:
+                    offscreen = draw_breakout_frame(offscreen, matrix, renderer,
+                        (breakout_ball_x, breakout_ball_y), breakout_paddle_x,
+                        breakout_bricks, lives=breakout_lives, score=breakout_score,
+                        username=menu_username, high_scores=cached_high_scores)
+                    display_dirty = False
+                time_until_tick = max(0.005, (breakout_last_tick + breakout_tick_interval) - time.time())
+                time.sleep(min(time_until_tick, poll_interval))
                 continue
             # --- Telegram message overlay ---
             # Expire the overlay once 30 seconds are up
