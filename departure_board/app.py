@@ -559,7 +559,17 @@ def run_loop(opts: argparse.Namespace):
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
             return
-        if now - last_rotation_accept < rotation_min_interval:
+        # Breakout live paddle wants every detent — the 80 ms debounce used for
+        # menu/snake/navigation would drop most pulses during a fast spin and
+        # leave the paddle stationary. Use a tight 5 ms debounce in that mode
+        # (still filters electrical noise) and the normal value elsewhere.
+        is_breakout_live = (
+            game_mode == "breakout"
+            and not breakout_game_over
+            and not screensaver_active
+        )
+        min_interval = 0.005 if is_breakout_live else rotation_min_interval
+        if now - last_rotation_accept < min_interval:
             return  # debounce / noise filter
         last_rotation_accept = now
         last_interaction = now  # any real rotation resets the screensaver idle timer
@@ -569,7 +579,7 @@ def run_loop(opts: argparse.Namespace):
             last_rotation_action = now
             return
         # Breakout live paddle: every detent counts — bypass the action cooldown
-        if game_mode == "breakout" and not breakout_game_over:
+        if is_breakout_live:
             raw_dir = 1 if raw_delta > 0 else -1
             dt_pulse = now - breakout_paddle_last_pulse_ts
             breakout_paddle_last_pulse_ts = now
