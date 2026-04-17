@@ -193,7 +193,12 @@ def run_loop(opts: argparse.Namespace):
     # high-speed spin always moves the paddle one way regardless of DT noise.
     breakout_paddle_committed_dir: int = 0
     breakout_paddle_last_pulse_ts: float = 0.0
+    breakout_paddle_opposite_count: int = 0
     BREAKOUT_FAST_SPIN_GAP_S: float = 0.1
+    # How many consecutive opposite-direction pulses force a direction flip even
+    # inside the fast-spin window. 1 would be too jumpy (single noise pulse
+    # reverses); 2 catches a real reversal after one confirming pulse.
+    BREAKOUT_REVERSE_CONFIRM_PULSES: int = 2
 
     # Telegram message overlay
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
@@ -379,18 +384,36 @@ def run_loop(opts: argparse.Namespace):
             breakout_ball_vy = -breakout_ball_vy
 
         # --- Paddle collision (only when descending) ---
+        # Use a full AABB overlap test against the paddle rect rather than a
+        # "vertical crossing plus horizontal overlap at end-of-step" check.
+        # The old crossing test missed diagonal approaches that clipped the
+        # paddle's top corner: the ball could cross paddle_top just outside the
+        # paddle horizontally, then slide in from the side on the next substep
+        # — by which point the "crossed this substep" condition no longer held
+        # and the ball passed straight through. Substeps are capped at ≤0.5 px
+        # so the ball can't tunnel through the 2 px-tall paddle in one step.
         if breakout_ball_vy > 0:
-            ball_bottom_prev = prev_y + bo.BALL_SIZE
-            ball_bottom_new = new_y + bo.BALL_SIZE
             paddle_top = bo.PADDLE_Y
-            if ball_bottom_prev <= paddle_top <= ball_bottom_new:
-                # Check horizontal overlap at the moment of crossing
-                if (new_x + bo.BALL_SIZE > breakout_paddle_x) and (new_x < breakout_paddle_x + bo.PADDLE_W):
-                    new_y = paddle_top - bo.BALL_SIZE
-                    breakout_ball_x = new_x
-                    breakout_ball_y = new_y
-                    _breakout_reflect_off_paddle()
-                    return True
+            paddle_bot = paddle_top + bo.PADDLE_H
+            paddle_left = breakout_paddle_x
+            paddle_right = breakout_paddle_x + bo.PADDLE_W
+            if (new_x + bo.BALL_SIZE > paddle_left and new_x < paddle_right and
+                    new_y + bo.BALL_SIZE > paddle_top and new_y < paddle_bot):
+                # Always snap the ball to rest on top of the paddle and apply
+                # angle reflection. Side-edge hits produce steep angles (the
+                # offset formula maxes out near the paddle end), which is the
+                # natural Breakout feel for corner hits.
+                new_y = paddle_top - bo.BALL_SIZE
+                # Clamp horizontal position so the ball sits within the paddle
+                # span — prevents visual overlap with the paddle on edge hits.
+                if new_x + bo.BALL_SIZE <= paddle_left:
+                    new_x = paddle_left
+                elif new_x >= paddle_right:
+                    new_x = paddle_right - bo.BALL_SIZE
+                breakout_ball_x = new_x
+                breakout_ball_y = new_y
+                _breakout_reflect_off_paddle()
+                return True
 
         # --- Ball fell past paddle (bottom of play area) ---
         if new_y >= bo.PLAY_H:
@@ -555,20 +578,33 @@ def run_loop(opts: argparse.Namespace):
         nonlocal snake_game_over_sel, last_interaction
         nonlocal breakout_game_over_sel, breakout_paddle_x, breakout_ball_x, breakout_ball_y
         nonlocal breakout_paddle_committed_dir, breakout_paddle_last_pulse_ts
+        nonlocal breakout_paddle_opposite_count
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
             return
         # Breakout live paddle wants every detent — the 80 ms debounce used for
-        # menu/snake/navigation would drop most pulses during a fast spin and
-        # leave the paddle stationary. Use a tight 5 ms debounce in that mode
-        # (still filters electrical noise) and the normal value elsewhere.
+        # navigation would drop most pulses during a fast spin and leave the
+        # paddle stationary. Snake wants fast consecutive turns at high speed,
+        # which the 80 ms debounce + 300 ms action cooldown together prevent.
+        # Use a tight debounce in both game modes (still filters electrical
+        # noise) and the normal value for menus/navigation.
         is_breakout_live = (
             game_mode == "breakout"
             and not breakout_game_over
             and not screensaver_active
         )
-        min_interval = 0.005 if is_breakout_live else rotation_min_interval
+        is_snake_live = (
+            game_mode == "snake"
+            and not snake_game_over_screen
+            and not screensaver_active
+        )
+        if is_breakout_live:
+            min_interval = 0.005
+        elif is_snake_live:
+            min_interval = 0.03
+        else:
+            min_interval = rotation_min_interval
         if now - last_rotation_accept < min_interval:
             return  # debounce / noise filter
         last_rotation_accept = now
@@ -583,13 +619,23 @@ def run_loop(opts: argparse.Namespace):
             raw_dir = 1 if raw_delta > 0 else -1
             dt_pulse = now - breakout_paddle_last_pulse_ts
             breakout_paddle_last_pulse_ts = now
-            # Commit a new direction only when the pulse is slow/isolated (DT is
-            # reliable then) or when no direction is committed yet. Pulses within
-            # the fast-spin window inherit the last committed direction — this
-            # makes a continuous fast spin move the paddle consistently even when
-            # the encoder emits bursts of noisy/reversed pulses.
+            # Commit a new direction when the pulse is slow/isolated (DT is
+            # reliable then) or when no direction is committed yet. Within the
+            # fast-spin window, pulses normally inherit the last committed
+            # direction to ignore noisy DT flips — but if we see several
+            # consecutive opposite-direction pulses, that's a real reversal, so
+            # flip. This keeps fast spins stable while still letting the user
+            # reverse direction mid-spin without a delay.
             if dt_pulse > BREAKOUT_FAST_SPIN_GAP_S or breakout_paddle_committed_dir == 0:
                 breakout_paddle_committed_dir = raw_dir
+                breakout_paddle_opposite_count = 0
+            elif raw_dir == breakout_paddle_committed_dir:
+                breakout_paddle_opposite_count = 0
+            else:
+                breakout_paddle_opposite_count += 1
+                if breakout_paddle_opposite_count >= BREAKOUT_REVERSE_CONFIRM_PULSES:
+                    breakout_paddle_committed_dir = raw_dir
+                    breakout_paddle_opposite_count = 0
             direction = breakout_paddle_committed_dir
             max_x = bo.PLAY_W - bo.PADDLE_W
             breakout_paddle_x = max(0, min(max_x, breakout_paddle_x + direction * BREAKOUT_PADDLE_STEP_PX))
@@ -597,6 +643,15 @@ def run_loop(opts: argparse.Namespace):
                 breakout_ball_x = float(breakout_paddle_x + (bo.PADDLE_W - bo.BALL_SIZE) // 2)
                 breakout_ball_y = float(bo.PADDLE_Y - bo.BALL_SIZE)
             display_dirty = True
+            return
+        # Snake mode: dial steers the snake. Bypass the action cooldown so the
+        # player can chain rapid turns at high snake speed — turn rate is still
+        # gated by the 30 ms debounce above. Without this, the 300 ms cooldown
+        # caps turns at ~3/sec while the snake ticks up to 20/sec at top speed.
+        if is_snake_live:
+            direction = 1 if raw_delta > 0 else -1
+            _snake_turn(direction)
+            last_rotation_action = now
             return
         # All other modes: coalesce multiple pulses from one physical twist
         if now - last_rotation_action < rotation_action_cooldown:
@@ -616,12 +671,6 @@ def run_loop(opts: argparse.Namespace):
             direction = 1 if raw_delta > 0 else -1
             snake_game_over_sel = (snake_game_over_sel + direction) % 2
             display_dirty = True
-            last_rotation_action = now
-            return
-        # Snake mode: dial steers the snake
-        if game_mode == "snake":
-            direction = 1 if raw_delta > 0 else -1
-            _snake_turn(direction)
             last_rotation_action = now
             return
         # Breakout game over screen: dial switches between Play again / Exit

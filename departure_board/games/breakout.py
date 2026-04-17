@@ -31,11 +31,11 @@ BALL_SIZE = 2
 
 # Row tier -> (color_rgb, score_value). Tier 1 is top row, 5 is bottom.
 ROW_TIERS: List[Tuple[Tuple[int, int, int], int]] = [
-    ((255, 60, 0),    50),   # red
-    ((255, 140, 0),   30),   # orange
-    ((220, 180, 0),   20),   # yellow
-    ((80, 200, 80),   10),   # green
-    ((80, 120, 255),  10),   # blue
+    ((255, 60, 0),    5),    # red
+    ((255, 140, 0),   3),    # orange
+    ((220, 180, 0),   2),    # yellow
+    ((80, 200, 80),   1),    # green
+    ((80, 120, 255),  1),    # blue
 ]
 
 
