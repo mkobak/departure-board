@@ -401,19 +401,16 @@ def draw_telegram_frame(off, matrix, renderer: Renderer, message: str):
     return matrix.SwapOnVSync(off)
 
 
-def draw_menu_frame(off, matrix, renderer: Renderer, username: str, game_list: List[str], selection: int):
+def draw_menu_frame(off, matrix, renderer: Renderer, game_list: List[str], selection: int):
     """Draw the game selection menu."""
     off.Fill(0, 0, 0)
     draw_glyph, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
     y = BOARD_MARGIN + 2
 
-    # Username line
-    name_label = _normalize_for_display(f"Name: {username}")
-    draw_text(BOARD_MARGIN + 1, y, name_label)
-    y += line_h + 3  # extra gap after name
+    draw_text(BOARD_MARGIN + 1, y, "Choose game:")
+    y += line_h + 3
 
-    # Game list with selector
     for i, game_name in enumerate(game_list):
         prefix = "> " if i == selection else "  "
         text = _normalize_for_display(prefix + game_name)
@@ -421,6 +418,41 @@ def draw_menu_frame(off, matrix, renderer: Renderer, username: str, game_list: L
         y += line_h
         if y + CHAR_H > renderer.rows - BOARD_MARGIN:
             break
+
+    return matrix.SwapOnVSync(off)
+
+
+_MAX_VISIBLE_USERNAMES = 7
+
+
+def draw_username_frame(off, matrix, renderer: Renderer,
+                        username_list: List[str], selection: int, scroll_offset: int):
+    """Draw the username selection screen."""
+    off.Fill(0, 0, 0)
+    draw_glyph, draw_text, measure = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+    HEADER_Y = 1
+    ENTRIES_START = 9
+
+    draw_text(BOARD_MARGIN + 1, HEADER_Y, "Player:")
+
+    if not username_list:
+        draw_text(BOARD_MARGIN + 1, ENTRIES_START, "Text bot to")
+        draw_text(BOARD_MARGIN + 1, ENTRIES_START + line_h, "add names")
+        return matrix.SwapOnVSync(off)
+
+    visible = username_list[scroll_offset: scroll_offset + _MAX_VISIBLE_USERNAMES]
+    for i, name in enumerate(visible):
+        abs_idx = scroll_offset + i
+        prefix = "> " if abs_idx == selection else "  "
+        draw_text(BOARD_MARGIN + 1, ENTRIES_START + i * line_h,
+                  _normalize_for_display(prefix + name))
+
+    # Scroll indicators
+    if scroll_offset > 0:
+        draw_text(renderer.cols - 6, ENTRIES_START, "^")
+    if scroll_offset + _MAX_VISIBLE_USERNAMES < len(username_list):
+        draw_text(renderer.cols - 6, ENTRIES_START + (_MAX_VISIBLE_USERNAMES - 1) * line_h, "v")
 
     return matrix.SwapOnVSync(off)
 

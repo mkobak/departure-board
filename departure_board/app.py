@@ -33,6 +33,7 @@ from .constants import BOARD_MARGIN, DEFAULT_COLS, DEFAULT_ROWS
 from .renderer import Renderer
 from .weather import WEATHER_CITIES, WeatherData, fetch_weather
 from .scores import load_high_scores, save_high_score
+from .usernames import load_usernames, save_username
 from .games import GAME_LIST
 from .games.snake import draw_pregame_frame, draw_snake_frame, draw_game_over_frame
 from .games import breakout as bo
@@ -43,7 +44,7 @@ from .games.breakout import (
 )
 from .drawing import (
     draw_frame, draw_weather_frame, draw_screensaver_frame,
-    draw_telegram_frame, draw_menu_frame,
+    draw_telegram_frame, draw_menu_frame, draw_username_frame,
     screensaver_random_pos, _start_telegram_poller,
 )
 
@@ -134,9 +135,15 @@ def run_loop(opts: argparse.Namespace):
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
 
     # Game system state
-    game_mode: str = "normal"  # "normal" | "menu" | "pregame" | "snake" | "breakout"
+    game_mode: str = "normal"  # "normal" | "username" | "menu" | "pregame" | "snake" | "breakout"
     menu_selection: int = 0    # index into GAME_LIST
     menu_username: str = "User"
+
+    # Username selection state
+    username_list: List[str] = load_usernames()
+    username_index: int = 0
+    username_scroll_offset: int = 0
+    _MAX_VISIBLE_USERNAMES = 7
     cached_high_scores: List[Dict[str, Any]] = []
     pregame_game: str = "Snake"  # which game the current pregame screen represents
 
@@ -592,6 +599,7 @@ def run_loop(opts: argparse.Namespace):
         nonlocal breakout_game_over_sel, breakout_paddle_x, breakout_ball_x, breakout_ball_y
         nonlocal breakout_paddle_committed_dir, breakout_paddle_last_pulse_ts
         nonlocal breakout_paddle_opposite_count
+        nonlocal username_index, username_scroll_offset
         now = time.time()
         # Guard: ignore rotation shortly after a button press (mechanical press can jiggle encoder)
         if (now - last_button_event) < rotate_guard_after_button:
@@ -669,6 +677,18 @@ def run_loop(opts: argparse.Namespace):
         # All other modes: coalesce multiple pulses from one physical twist
         if now - last_rotation_action < rotation_action_cooldown:
             return
+        # Username mode: dial scrolls the username list
+        if game_mode == "username":
+            direction = 1 if raw_delta > 0 else -1
+            if username_list:
+                username_index = (username_index + direction) % len(username_list)
+                if username_index >= username_scroll_offset + _MAX_VISIBLE_USERNAMES:
+                    username_scroll_offset = username_index - _MAX_VISIBLE_USERNAMES + 1
+                elif username_index < username_scroll_offset:
+                    username_scroll_offset = username_index
+            display_dirty = True
+            last_rotation_action = now
+            return
         # Menu mode: dial scrolls the game selection
         if game_mode == "menu":
             direction = 1 if raw_delta > 0 else -1
@@ -726,6 +746,7 @@ def run_loop(opts: argparse.Namespace):
         nonlocal game_mode, menu_selection, menu_username, page_toggle, last_button_event
         nonlocal telegram_msg, telegram_expires, display_dirty, cached_high_scores
         nonlocal snake_game_over_sel, last_interaction, pregame_game
+        nonlocal username_list, username_index, username_scroll_offset
         nowb = time.time()
         # Noise filter: ignore presses <100ms apart
         if (nowb - last_button_event) < 0.1:
@@ -745,7 +766,7 @@ def run_loop(opts: argparse.Namespace):
             return
         # Double-click: second press within 100-400ms window
         if (nowb - prev_button_time) < 0.4:
-            if game_mode in ("snake", "breakout", "menu", "pregame"):
+            if game_mode in ("snake", "breakout", "menu", "pregame", "username"):
                 # Double-click from any game screen -> back to departures
                 if game_mode == "snake":
                     score = len(snake_body) - 3
@@ -759,10 +780,19 @@ def run_loop(opts: argparse.Namespace):
                 display_dirty = True
                 schedule_fetch(0.0)
             else:
-                # Enter menu from normal mode
-                game_mode = "menu"
-                menu_selection = 0
+                # Enter username selection from normal mode
+                game_mode = "username"
+                username_index = 0
+                username_scroll_offset = 0
+                username_list = load_usernames()
                 display_dirty = True
+            return
+        # Single click in username mode: confirm selection -> go to game selection
+        if game_mode == "username":
+            menu_username = username_list[username_index] if username_list else "Player"
+            game_mode = "menu"
+            menu_selection = 0
+            display_dirty = True
             return
         # Single click in menu: go to pregame screen for the selected game
         if game_mode == "menu":
@@ -1141,7 +1171,13 @@ def run_loop(opts: argparse.Namespace):
             try:
                 while True:
                     new_msg = telegram_queue.get_nowait()
-                    if game_mode in ("menu", "pregame"):
+                    if game_mode == "username":
+                        new_name = new_msg.strip()
+                        if new_name and new_name not in username_list:
+                            username_list.append(new_name)
+                            save_username(new_name)
+                        display_dirty = True
+                    elif game_mode in ("menu", "pregame"):
                         # Capture username from telegram message
                         menu_username = new_msg.strip()[:6] or "User"
                         display_dirty = True
@@ -1231,11 +1267,19 @@ def run_loop(opts: argparse.Namespace):
                 time_until_move = max(0.005, (snake_last_move + snake_move_interval) - time.time())
                 time.sleep(min(time_until_move, poll_interval))
                 continue
+            # --- Username selection mode ---
+            if game_mode == "username":
+                if display_dirty:
+                    offscreen = draw_username_frame(offscreen, matrix, renderer,
+                        username_list, username_index, username_scroll_offset)
+                    display_dirty = False
+                time.sleep(poll_interval)
+                continue
             # --- Game menu mode ---
             if game_mode == "menu":
                 if display_dirty:
                     offscreen = draw_menu_frame(offscreen, matrix, renderer,
-                        menu_username, GAME_LIST, menu_selection)
+                        GAME_LIST, menu_selection)
                     display_dirty = False
                 time.sleep(poll_interval)
                 continue
