@@ -70,7 +70,8 @@ def draw_snake_frame(off, matrix, renderer: Renderer,
     """Draw the snake game with left score panel and right play area."""
     off.Fill(0, 0, 0)
 
-    panel_width = game_x_offset - 2  # usable panel content width
+    panel_x = BOARD_MARGIN + 2  # left margin for score panel content
+    panel_width = game_x_offset - panel_x - 1  # usable panel content width
     separator_x = game_x_offset - 1  # vertical divider line
 
     # --- Score Panel (left side) ---
@@ -85,12 +86,12 @@ def draw_snake_frame(off, matrix, renderer: Renderer,
         if measure(truncated + ch) > panel_width:
             break
         truncated += ch
-    draw_text(BOARD_MARGIN, y, truncated)
+    draw_text(panel_x, y, truncated)
     y += line_h
 
     # Score
     score_text = _normalize_for_display(str(score))
-    draw_text(BOARD_MARGIN, y, score_text)
+    draw_text(panel_x, y, score_text)
     y += line_h + 3  # gap before high scores
 
     # Top 3 high scores (numbers only)
@@ -98,7 +99,7 @@ def draw_snake_frame(off, matrix, renderer: Renderer,
     if top3:
         for i, entry in enumerate(top3):
             hs_text = _normalize_for_display(f"{i + 1}. {entry['score']}")
-            draw_text(BOARD_MARGIN, y, hs_text)
+            draw_text(panel_x, y, hs_text)
             y += line_h
 
     # Separator line (dim amber)

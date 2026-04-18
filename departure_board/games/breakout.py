@@ -113,7 +113,8 @@ def draw_breakout_frame(off, matrix, renderer: Renderer,
     """Draw the active Breakout game: left score panel, right play area."""
     off.Fill(0, 0, 0)
 
-    panel_width = PLAY_X - 2
+    panel_x = BOARD_MARGIN + 2  # left margin for score panel content
+    panel_width = PLAY_X - panel_x - 1
     separator_x = PLAY_X - 1
 
     # --- Score Panel (left side) ---
@@ -128,22 +129,22 @@ def draw_breakout_frame(off, matrix, renderer: Renderer,
         if measure(truncated + ch) > panel_width:
             break
         truncated += ch
-    draw_text(BOARD_MARGIN, y, truncated)
+    draw_text(panel_x, y, truncated)
     y += line_h
 
     # Score
-    draw_text(BOARD_MARGIN, y, _normalize_for_display(str(score)))
+    draw_text(panel_x, y, _normalize_for_display(str(score)))
     y += line_h
 
     # Lives
-    draw_text(BOARD_MARGIN, y, _normalize_for_display(f"Lives {lives}"))
+    draw_text(panel_x, y, _normalize_for_display(f"Lives {lives}"))
     y += line_h + 2
 
     # Top 3 high scores (numbers only)
     top3 = (high_scores or [])[:3]
     for i, entry in enumerate(top3):
         hs_text = _normalize_for_display(f"{i + 1}. {entry['score']}")
-        draw_text(BOARD_MARGIN, y, hs_text)
+        draw_text(panel_x, y, hs_text)
         y += line_h
         if y + CHAR_H > renderer.rows - BOARD_MARGIN:
             break
