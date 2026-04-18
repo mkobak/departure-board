@@ -143,7 +143,7 @@ def run_loop(opts: argparse.Namespace):
     username_list: List[str] = load_usernames()
     username_index: int = 0
     username_scroll_offset: int = 0
-    _MAX_VISIBLE_USERNAMES = 7
+    _MAX_VISIBLE_USERNAMES = 6
     cached_high_scores: List[Dict[str, Any]] = []
     pregame_game: str = "Snake"  # which game the current pregame screen represents
 
@@ -304,8 +304,10 @@ def run_loop(opts: argparse.Namespace):
 
     def _exit_snake():
         nonlocal game_mode, display_dirty
-        game_mode = "pregame"
+        game_mode = "normal"
+        menu_username = "User"
         display_dirty = True
+        schedule_fetch(0.0)
 
     # --- Breakout game helpers ---
 
@@ -578,8 +580,10 @@ def run_loop(opts: argparse.Namespace):
 
     def _exit_breakout():
         nonlocal game_mode, display_dirty
-        game_mode = "pregame"
+        game_mode = "normal"
+        menu_username = "User"
         display_dirty = True
+        schedule_fetch(0.0)
 
     def _accept_rotation(direction: int):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty

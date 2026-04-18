@@ -406,15 +406,17 @@ def draw_menu_frame(off, matrix, renderer: Renderer, game_list: List[str], selec
     off.Fill(0, 0, 0)
     draw_glyph, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
-    y = BOARD_MARGIN + 2
+    cx = lambda t: max(BOARD_MARGIN, (renderer.cols - measure(t)) // 2)
+    y = BOARD_MARGIN + 4
 
-    draw_text(BOARD_MARGIN + 1, y, "Choose game:")
-    y += line_h + 3
+    header = "Choose game:"
+    draw_text(cx(header), y, header)
+    y += line_h + 4
 
     for i, game_name in enumerate(game_list):
         prefix = "> " if i == selection else "  "
         text = _normalize_for_display(prefix + game_name)
-        draw_text(BOARD_MARGIN + 1, y, text)
+        draw_text(cx(text), y, text)
         y += line_h
         if y + CHAR_H > renderer.rows - BOARD_MARGIN:
             break
@@ -422,7 +424,7 @@ def draw_menu_frame(off, matrix, renderer: Renderer, game_list: List[str], selec
     return matrix.SwapOnVSync(off)
 
 
-_MAX_VISIBLE_USERNAMES = 7
+_MAX_VISIBLE_USERNAMES = 6
 
 
 def draw_username_frame(off, matrix, renderer: Renderer,
@@ -431,24 +433,28 @@ def draw_username_frame(off, matrix, renderer: Renderer,
     off.Fill(0, 0, 0)
     draw_glyph, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
-    HEADER_Y = 1
-    ENTRIES_START = 9
+    cx = lambda t: max(BOARD_MARGIN, (renderer.cols - measure(t)) // 2)
+    HEADER_Y = 4
+    ENTRIES_START = 16  # HEADER_Y + CHAR_H + 5px gap
 
-    draw_text(BOARD_MARGIN + 1, HEADER_Y, "Player:")
+    header = "Player:"
+    draw_text(cx(header), HEADER_Y, header)
 
     if not username_list:
-        draw_text(BOARD_MARGIN + 1, ENTRIES_START, "Text bot to")
-        draw_text(BOARD_MARGIN + 1, ENTRIES_START + line_h, "add names")
+        hint1 = "Text bot to"
+        hint2 = "add names"
+        draw_text(cx(hint1), ENTRIES_START, hint1)
+        draw_text(cx(hint2), ENTRIES_START + line_h, hint2)
         return matrix.SwapOnVSync(off)
 
     visible = username_list[scroll_offset: scroll_offset + _MAX_VISIBLE_USERNAMES]
     for i, name in enumerate(visible):
         abs_idx = scroll_offset + i
         prefix = "> " if abs_idx == selection else "  "
-        draw_text(BOARD_MARGIN + 1, ENTRIES_START + i * line_h,
-                  _normalize_for_display(prefix + name))
+        text = _normalize_for_display(prefix + name)
+        draw_text(cx(text), ENTRIES_START + i * line_h, text)
 
-    # Scroll indicators
+    # Scroll indicators at right edge
     if scroll_offset > 0:
         draw_text(renderer.cols - 6, ENTRIES_START, "^")
     if scroll_offset + _MAX_VISIBLE_USERNAMES < len(username_list):

@@ -40,20 +40,22 @@ ROW_TIERS: List[Tuple[Tuple[int, int, int], int]] = [
 
 
 def draw_pregame_frame(off, matrix, renderer: Renderer, high_scores: List[Dict[str, Any]]):
-    """Pre-game screen with '> Play' and top 3 high scores (identical to Snake)."""
+    """Pre-game screen with '> Play' and top 3 high scores."""
     off.Fill(0, 0, 0)
-    _, draw_text, _ = make_draw_helpers(off, renderer)
+    _, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
-    y = BOARD_MARGIN + 2
+    cx = lambda t: max(BOARD_MARGIN, (renderer.cols - measure(t)) // 2)
+    y = BOARD_MARGIN + 4
 
-    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display("> Play"))
-    y += line_h + 3
+    play_text = _normalize_for_display("> Play")
+    draw_text(cx(play_text), y, play_text)
+    y += line_h + 4
 
     top3 = high_scores[:3]
     for i, entry in enumerate(top3):
         hs_name = _normalize_for_display(entry['name'])
-        hs_text = f"{i + 1}. {hs_name} {entry['score']}"
-        draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(hs_text))
+        hs_text = _normalize_for_display(f"{i + 1}. {hs_name} {entry['score']}")
+        draw_text(cx(hs_text), y, hs_text)
         y += line_h
         if y + CHAR_H > renderer.rows - BOARD_MARGIN:
             break
@@ -62,23 +64,27 @@ def draw_pregame_frame(off, matrix, renderer: Renderer, high_scores: List[Dict[s
 
 
 def draw_game_over_frame(off, matrix, renderer: Renderer, score: int, sel: int, is_new_high_score: bool):
-    """Game over screen identical in shape to Snake's."""
+    """Game over screen."""
     off.Fill(0, 0, 0)
-    _, draw_text, _ = make_draw_helpers(off, renderer)
+    _, draw_text, measure = make_draw_helpers(off, renderer)
     line_h = CHAR_H + LINE_SPACING
-    y = BOARD_MARGIN + 2
+    cx = lambda t: max(BOARD_MARGIN, (renderer.cols - measure(t)) // 2)
+    y = BOARD_MARGIN + 4
 
-    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display("Game over"))
+    title = _normalize_for_display("Game over")
+    draw_text(cx(title), y, title)
+    y += line_h + 2
+
+    score_line = _normalize_for_display(f"New high score: {score}" if is_new_high_score else f"Score: {score}")
+    draw_text(cx(score_line), y, score_line)
+    y += line_h + 2
+
+    play_again = _normalize_for_display(">Play again" if sel == 0 else " Play again")
+    draw_text(cx(play_again), y, play_again)
     y += line_h
 
-    score_line = f"New high score: {score}" if is_new_high_score else f"Score: {score}"
-    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(score_line))
-    y += line_h
-
-    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(">Play again" if sel == 0 else " Play again"))
-    y += line_h
-
-    draw_text(BOARD_MARGIN + 1, y, _normalize_for_display(">Exit" if sel == 1 else " Exit"))
+    exit_text = _normalize_for_display(">Exit" if sel == 1 else " Exit")
+    draw_text(cx(exit_text), y, exit_text)
 
     return matrix.SwapOnVSync(off)
 
