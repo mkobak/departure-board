@@ -237,9 +237,22 @@ def run_loop(opts: argparse.Namespace):
         nonlocal snake_dir
         dx, dy = snake_dir
         if direction > 0:   # clockwise: right -> down -> left -> up
-            snake_dir = (-dy, dx)
+            new_dir = (-dy, dx)
         else:               # counter-clockwise
-            snake_dir = (dy, -dx)
+            new_dir = (dy, -dx)
+        # Reject a turn that would walk the head straight into its neck — this
+        # happens when two 90° turns land between the same snake tick (fast
+        # rocking of the knob, or a spurious duplicate pulse from one physical
+        # detent) and together form a 180° reversal. A true U-turn across two
+        # ticks moves the neck first, so the check passes; same-tick double
+        # turns are dropped and the snake keeps the first turn.
+        if len(snake_body) >= 2:
+            hx, hy = snake_body[0]
+            nx = (hx + new_dir[0]) % SNAKE_GRID_COLS
+            ny = (hy + new_dir[1]) % SNAKE_GRID_ROWS
+            if (nx, ny) == snake_body[1]:
+                return
+        snake_dir = new_dir
 
     def _snake_step() -> bool:
         nonlocal snake_body, snake_food, snake_move_interval, display_dirty
