@@ -17,7 +17,12 @@ Environment=TZ=Europe/Zurich
 
 # Allow realtime scheduling so the rgbmatrix PWM thread avoids jitter while staying non-root
 AmbientCapabilities=CAP_SYS_NICE
-CapabilityBoundingSet=CAP_SYS_NICE
+# CAP_SETUID/SETGID/AUDIT_WRITE are required so that `sudo /sbin/poweroff`
+# (used by the long-press shutdown feature) can elevate. They are only
+# available to setuid binaries — the python process itself still runs with
+# only CAP_SYS_NICE via AmbientCapabilities, so no privilege is granted to
+# normal application code.
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE
 LimitRTPRIO=99
 CPUSchedulingPolicy=rr
 CPUSchedulingPriority=80
