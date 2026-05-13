@@ -48,6 +48,15 @@ cd bindings/python
 # Install rgbmatrix binding into venv using pip (wheel build) instead of deprecated setup.py install
 sudo -u "$TARGET_USER" bash -c "source '$VENV_DIR/bin/activate' && pip install --no-cache-dir ."
 
+# Install USB rescan helper + service. Forces a dwc2 bus re-enumeration at
+# boot so the Berrybase / Jieli UAC speaker is detected after a cold
+# power-cycle. Requires `dtoverlay=dwc2,dr_mode=host` in
+# /boot/firmware/config.txt; the script no-ops if dwc2 isn't bound.
+install -m 755 -o root -g root "$REPO_DIR/usb-rescan.sh" /usr/local/sbin/usb-rescan.sh
+cp "$REPO_DIR/usb-rescan.service" /etc/systemd/system/usb-rescan.service
+systemctl daemon-reload
+systemctl enable usb-rescan.service
+
 # Copy systemd service unit
 cp "$REPO_DIR/$SERVICE_FILE" /etc/systemd/system/$SERVICE_FILE
 # Patch service ExecStart and paths for TARGET_USER

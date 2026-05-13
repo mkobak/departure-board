@@ -1,0 +1,13 @@
+[Unit]
+Description=Re-enumerate USB bus to recover devices missed at cold boot
+# Runs before any service that depends on USB peripherals (e.g. the USB
+# speaker used by departure-board.service). Safe no-op if dwc2 isn't active.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usb-rescan.sh
+RemainAfterExit=yes
+TimeoutStartSec=15
+
+[Install]
+WantedBy=multi-user.target
