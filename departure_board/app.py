@@ -988,8 +988,16 @@ def run_loop(opts: argparse.Namespace):
         quiet_start_hour=getattr(opts, 'audio_quiet_start', 22),
         quiet_end_hour=getattr(opts, 'audio_quiet_end', 8),
     )
-    # Bootup chime (silenced automatically during quiet hours).
-    audio.play('bootup')
+    # Bootup chime. We defer the play because on real cold boot the USB audio
+    # device may not be enumerated yet when this service starts — firing aplay
+    # immediately silently fails. A short delay lets ALSA settle. Skipped at
+    # zero so `systemctl restart` doesn't add latency on a warm system.
+    _bootup_delay = max(0.0, float(getattr(opts, 'audio_bootup_delay', 4.0)))
+    def _play_bootup_deferred():
+        if _bootup_delay > 0:
+            time.sleep(_bootup_delay)
+        audio.play('bootup')
+    threading.Thread(target=_play_bootup_deferred, daemon=True).start()
 
     # Telegram bot poller
     _telegram_token = getattr(opts, 'telegram_token', '')
@@ -1238,6 +1246,10 @@ def run_loop(opts: argparse.Namespace):
                         # Final frame so the user sees "Goodbye" before halt.
                         offscreen = draw_shutdown_frame(offscreen, matrix, renderer,
                                                         progress=1.0, halting=True)
+                        # Hold the frame long enough to actually read it.
+                        # systemd will SIGTERM us soon after poweroff is called,
+                        # so we delay the call rather than try to redraw later.
+                        time.sleep(1.5)
                         # sudo -n returns 1 immediately if password would be
                         # required, so we can detect a missing sudoers rule
                         # and recover instead of leaving a stuck overlay.
@@ -1575,6 +1587,9 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--audio-quiet-end', type=int, default=8,
                    help='Hour (0-23) when quiet hours end. Default 8 (8am). '
                         'Set start == end to disable quiet hours entirely.')
+    p.add_argument('--audio-bootup-delay', type=float, default=4.0,
+                   help='Seconds to wait after startup before playing the bootup chime. '
+                        'Gives USB audio time to enumerate on cold boot. Default 4.0.')
     return p.parse_args(argv)
 
 
@@ -1618,6 +1633,11 @@ def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover
     if env.get('AUDIO_QUIET_END', '').strip():
         try:
             opts.audio_quiet_end = int(env['AUDIO_QUIET_END'])
+        except ValueError:
+            pass
+    if env.get('AUDIO_BOOTUP_DELAY', '').strip():
+        try:
+            opts.audio_bootup_delay = float(env['AUDIO_BOOTUP_DELAY'])
         except ValueError:
             pass
     run_loop(opts)
