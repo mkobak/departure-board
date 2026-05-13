@@ -201,8 +201,17 @@ python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 
 ## Audio (Notification + Game Sounds)
 
-A USB speaker plugged into the Pi will play a short chime when a Telegram
-message arrives. Game sound effects use the same player.
+A USB speaker plugged into the Pi plays:
+
+- A **bootup** arpeggio when the service starts.
+- A **two-tone chime** on incoming Telegram messages.
+- **Snake**: eat-food blip, descending death sweep.
+- **Breakout**: ball launch whoosh, paddle thunk, pitched brick ticks
+  (higher tones for top rows), lose-life warble, game-over descent, level-up
+  fanfare.
+
+All sounds are square/sine waves generated in-process — no audio files to
+ship or install. Override the Telegram chime with `--telegram-sound PATH`.
 
 ### Find your USB device
 
@@ -220,9 +229,13 @@ can omit this and the system default will be used.
 --no-audio                   Disable all sound output
 --audio-device DEV           ALSA device (e.g. plughw:CARD=USB,DEV=0)
 --telegram-sound PATH        Custom WAV for the notification chime
+--audio-quiet-start HOUR     Quiet hours start (24h, default 22)
+--audio-quiet-end HOUR       Quiet hours end (24h, default 8)
 ```
 
-These can also be set via `.env` as `AUDIO_DEVICE`, `TELEGRAM_SOUND`, `NO_AUDIO=1`.
+Audio is silenced during quiet hours (default 22:00–08:00). Set start == end to
+disable. These can also be set via `.env` as `AUDIO_DEVICE`, `TELEGRAM_SOUND`,
+`NO_AUDIO=1`, `AUDIO_QUIET_START`, `AUDIO_QUIET_END`.
 
 ### Requirements
 

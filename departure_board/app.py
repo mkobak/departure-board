@@ -277,6 +277,7 @@ def run_loop(opts: argparse.Namespace):
             snake_body.pop()
         else:
             snake_food = _snake_new_food()
+            audio.play('snake_eat')
             # Smooth speed progression: constant decrease per food eaten, capped at min interval
             current_score = len(snake_body) - 3
             snake_move_interval = max(snake_min_interval, snake_base_interval - current_score * snake_speed_step)
@@ -335,6 +336,7 @@ def run_loop(opts: argparse.Namespace):
         breakout_ball_vx = speed * math.sin(angle)
         breakout_ball_vy = -speed * math.cos(angle)
         breakout_ball_stuck = False
+        audio.play('breakout_launch')
 
     def _breakout_new_level(bump_level: bool):
         """Populate bricks, reset ball position. Optionally bump level for speed ramp."""
@@ -436,6 +438,7 @@ def run_loop(opts: argparse.Namespace):
                 breakout_ball_x = new_x
                 breakout_ball_y = new_y
                 _breakout_reflect_off_paddle()
+                audio.play('breakout_paddle')
                 return True
 
         # --- Ball fell past paddle (bottom of play area) ---
@@ -493,6 +496,7 @@ def run_loop(opts: argparse.Namespace):
             breakout_bricks[row_idx][col_idx] = 0
             tier_idx = row_idx if row_idx < len(bo.ROW_TIERS) else len(bo.ROW_TIERS) - 1
             breakout_score += bo.ROW_TIERS[tier_idx][1]
+            audio.play(f'breakout_brick_{tier_idx}')
 
         breakout_ball_x = new_x
         breakout_ball_y = new_y
@@ -542,12 +546,14 @@ def run_loop(opts: argparse.Namespace):
                 if breakout_lives <= 0:
                     display_dirty = True
                     return False
+                audio.play('breakout_lose_life')
                 _breakout_reset_ball()
                 display_dirty = True
                 return True
             remaining_t -= step_t
 
         if _breakout_all_cleared():
+            audio.play('breakout_level')
             _breakout_new_level(bump_level=True)
 
         display_dirty = True
@@ -969,7 +975,11 @@ def run_loop(opts: argparse.Namespace):
         enabled=not getattr(opts, 'no_audio', False),
         device=getattr(opts, 'audio_device', '') or None,
         overrides={'notification': getattr(opts, 'telegram_sound', '') or ''},
+        quiet_start_hour=getattr(opts, 'audio_quiet_start', 22),
+        quiet_end_hour=getattr(opts, 'audio_quiet_end', 8),
     )
+    # Bootup chime (silenced automatically during quiet hours).
+    audio.play('bootup')
 
     # Telegram bot poller
     _telegram_token = getattr(opts, 'telegram_token', '')
@@ -1260,6 +1270,7 @@ def run_loop(opts: argparse.Namespace):
                         cached_high_scores = load_high_scores("snake")
                         snake_game_over = True
                         snake_game_over_ts = now
+                        audio.play('snake_die')
                         snake_game_over_screen = False
                         offscreen = draw_snake_frame(offscreen, matrix, renderer,
                             snake_body, snake_food, game_over=True,
@@ -1333,6 +1344,7 @@ def run_loop(opts: argparse.Namespace):
                         cached_high_scores = load_high_scores("breakout")
                         breakout_game_over = True
                         breakout_game_over_ts = now
+                        audio.play('breakout_game_over')
                         breakout_game_over_screen = False
                         offscreen = draw_breakout_frame(offscreen, matrix, renderer,
                             (breakout_ball_x, breakout_ball_y), breakout_paddle_x,
@@ -1486,6 +1498,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--telegram-sound', default='',
                    help='Path to a custom WAV file to play on incoming Telegram messages. '
                         'Leave empty to use the built-in chime.')
+    p.add_argument('--audio-quiet-start', type=int, default=22,
+                   help='Hour (0-23) when quiet hours begin and audio is silenced. Default 22 (10pm).')
+    p.add_argument('--audio-quiet-end', type=int, default=8,
+                   help='Hour (0-23) when quiet hours end. Default 8 (8am). '
+                        'Set start == end to disable quiet hours entirely.')
     return p.parse_args(argv)
 
 
@@ -1521,5 +1538,15 @@ def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover
         opts.telegram_sound = env['TELEGRAM_SOUND']
     if env.get('NO_AUDIO', '').strip().lower() in ('1', 'true', 'yes'):
         opts.no_audio = True
+    if env.get('AUDIO_QUIET_START', '').strip():
+        try:
+            opts.audio_quiet_start = int(env['AUDIO_QUIET_START'])
+        except ValueError:
+            pass
+    if env.get('AUDIO_QUIET_END', '').strip():
+        try:
+            opts.audio_quiet_end = int(env['AUDIO_QUIET_END'])
+        except ValueError:
+            pass
     run_loop(opts)
     return 0
