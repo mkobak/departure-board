@@ -1,7 +1,10 @@
 [Unit]
 Description=LED Matrix Departure Board
-# Start early to clear any stale frame from previous boot; don't wait for network-online
-After=network-pre.target
+# Start early to clear any stale frame from previous boot; don't wait for network-online.
+# usb-rescan.service rebinds the USB host so the UAC speaker is re-enumerated
+# after a cold boot (otherwise it stays invisible until physically replugged).
+After=network-pre.target usb-rescan.service
+Wants=usb-rescan.service
 
 [Service]
 Type=simple
