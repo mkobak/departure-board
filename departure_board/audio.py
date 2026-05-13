@@ -141,15 +141,15 @@ _BUILTIN_SOUNDS: Dict[str, "callable"] = {
     # Brick break: pitched per tier (0=top/red highest, 4=bottom/blue lowest).
     # Frequencies are kept above 600Hz so all tiers are audible on USB speakers,
     # while still giving a clear pitch progression across rows.
-    'breakout_brick_0': lambda: _tone(1320.0, 0.07, volume=0.7, shape='square',
+    'breakout_brick_0': lambda: _tone(1320.0, 0.07, volume=0.55, shape='square',
                                        attack_s=0.002, release_s=0.005),
-    'breakout_brick_1': lambda: _tone(1100.0, 0.07, volume=0.7, shape='square',
+    'breakout_brick_1': lambda: _tone(1100.0, 0.07, volume=0.55, shape='square',
                                        attack_s=0.002, release_s=0.005),
-    'breakout_brick_2': lambda: _tone(900.0, 0.07, volume=0.7, shape='square',
+    'breakout_brick_2': lambda: _tone(900.0, 0.07, volume=0.55, shape='square',
                                        attack_s=0.002, release_s=0.005),
-    'breakout_brick_3': lambda: _tone(750.0, 0.07, volume=0.7, shape='square',
+    'breakout_brick_3': lambda: _tone(750.0, 0.07, volume=0.55, shape='square',
                                        attack_s=0.002, release_s=0.005),
-    'breakout_brick_4': lambda: _tone(620.0, 0.07, volume=0.7, shape='square',
+    'breakout_brick_4': lambda: _tone(620.0, 0.07, volume=0.55, shape='square',
                                        attack_s=0.002, release_s=0.005),
     # Wall bounce: very short click. (Currently unused — kept for future opt-in.)
     'breakout_wall': lambda: _tone(440.0, 0.02, volume=0.35, shape='square'),
