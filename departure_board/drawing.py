@@ -401,6 +401,52 @@ def draw_telegram_frame(off, matrix, renderer: Renderer, message: str):
     return matrix.SwapOnVSync(off)
 
 
+def draw_shutdown_frame(off, matrix, renderer: Renderer, progress: float, halting: bool = False):
+    """Draw a centered 'Shutting down' message with a hold-progress bar.
+
+    ``progress`` is clamped to [0.0, 1.0]; the bar fills as the button is held.
+    When ``halting=True`` (poweroff already triggered), text reads 'Goodbye'
+    and the bar is full so the user gets clear feedback before the panel dies.
+    """
+    off.Fill(0, 0, 0)
+    _, draw_text, measure = make_draw_helpers(off, renderer)
+    line_h = CHAR_H + LINE_SPACING
+
+    title = _normalize_for_display("Goodbye" if halting else "Shutting down")
+    sub = _normalize_for_display("hold to power off" if not halting else "Unplug when dark")
+
+    title_x = max(BOARD_MARGIN, (renderer.cols - measure(title)) // 2)
+    sub_x = max(BOARD_MARGIN, (renderer.cols - measure(sub)) // 2)
+
+    text_block_h = CHAR_H + line_h
+    bar_h = 4
+    gap = 4
+    total_h = text_block_h + gap + bar_h
+    y0 = max(BOARD_MARGIN, (renderer.rows - total_h) // 2)
+
+    draw_text(title_x, y0, title)
+    draw_text(sub_x, y0 + line_h, sub)
+
+    bar_y = y0 + text_block_h + gap
+    bar_w = renderer.cols - 2 * (BOARD_MARGIN + 2)
+    bar_x = BOARD_MARGIN + 2
+    p = max(0.0, min(1.0, progress))
+    filled = int(round(bar_w * p))
+    # Outline
+    for x in range(bar_w):
+        off.SetPixel(bar_x + x, bar_y, 80, 40, 0)
+        off.SetPixel(bar_x + x, bar_y + bar_h - 1, 80, 40, 0)
+    for y in range(bar_h):
+        off.SetPixel(bar_x, bar_y + y, 80, 40, 0)
+        off.SetPixel(bar_x + bar_w - 1, bar_y + y, 80, 40, 0)
+    # Fill
+    for x in range(filled):
+        for y in range(1, bar_h - 1):
+            off.SetPixel(bar_x + x, bar_y + y, 255, 140, 0)
+
+    return matrix.SwapOnVSync(off)
+
+
 def draw_menu_frame(off, matrix, renderer: Renderer, game_list: List[str], selection: int):
     """Draw the game selection menu."""
     off.Fill(0, 0, 0)

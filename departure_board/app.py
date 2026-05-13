@@ -45,6 +45,7 @@ from .games.breakout import (
 from .drawing import (
     draw_frame, draw_weather_frame, draw_screensaver_frame,
     draw_telegram_frame, draw_menu_frame, draw_username_frame,
+    draw_shutdown_frame,
     screensaver_random_pos, _start_telegram_poller,
 )
 from .audio import AudioPlayer
@@ -212,6 +213,15 @@ def run_loop(opts: argparse.Namespace):
     telegram_queue: queue.Queue = queue.Queue(maxsize=10)
     telegram_msg: Optional[str] = None     # currently displayed message
     telegram_expires: float = 0.0          # epoch time when overlay ends
+
+    # Long-press shutdown state. Hold the encoder button for SHUTDOWN_HOLD_S
+    # to trigger a clean poweroff. The overlay appears after SHUTDOWN_ARM_S so
+    # brief presses (normal clicks) never flash it.
+    SHUTDOWN_ARM_S: float = 1.0
+    SHUTDOWN_HOLD_S: float = 3.0
+    button_hold_start: float = 0.0  # epoch when current physical hold began (0 = not held)
+    shutdown_overlay_active: bool = False
+    shutdown_initiated: bool = False
 
     def schedule_fetch(delay: float = 0.0):
         nonlocal next_scheduled_fetch
@@ -1213,6 +1223,68 @@ def run_loop(opts: argparse.Namespace):
                         display_dirty = True
             except queue.Empty:
                 pass
+            # --- Long-press shutdown detection -------------------------------
+            # While the encoder button is physically held, count up; show an
+            # overlay after SHUTDOWN_ARM_S to confirm intent, trigger poweroff
+            # at SHUTDOWN_HOLD_S. Releasing before SHUTDOWN_HOLD_S aborts.
+            if encoder is not None and not shutdown_initiated:
+                if encoder.is_button_down():
+                    if button_hold_start == 0.0:
+                        button_hold_start = now
+                    held = now - button_hold_start
+                    if held >= SHUTDOWN_HOLD_S:
+                        shutdown_initiated = True
+                        shutdown_overlay_active = True
+                        # Final frame so the user sees "Goodbye" before halt.
+                        offscreen = draw_shutdown_frame(offscreen, matrix, renderer,
+                                                        progress=1.0, halting=True)
+                        # sudo -n returns 1 immediately if password would be
+                        # required, so we can detect a missing sudoers rule
+                        # and recover instead of leaving a stuck overlay.
+                        try:
+                            result = subprocess.run(
+                                ['sudo', '-n', '/sbin/poweroff'],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE,
+                                timeout=3.0,
+                            )
+                            if result.returncode != 0:
+                                err = (result.stderr or b'').decode(errors='replace').strip()
+                                print(f'[shutdown] sudo poweroff returned {result.returncode}: {err}',
+                                      file=sys.stderr)
+                                shutdown_initiated = False
+                                shutdown_overlay_active = False
+                                button_hold_start = 0.0
+                                display_dirty = True
+                        except Exception as e:  # noqa: BLE001
+                            print(f'[shutdown] poweroff failed: {e}', file=sys.stderr)
+                            shutdown_initiated = False
+                            shutdown_overlay_active = False
+                            button_hold_start = 0.0
+                            display_dirty = True
+                    elif held >= SHUTDOWN_ARM_S:
+                        if not shutdown_overlay_active:
+                            shutdown_overlay_active = True
+                        prog = (held - SHUTDOWN_ARM_S) / (SHUTDOWN_HOLD_S - SHUTDOWN_ARM_S)
+                        offscreen = draw_shutdown_frame(offscreen, matrix, renderer,
+                                                        progress=prog, halting=False)
+                else:
+                    if button_hold_start != 0.0:
+                        # Released. If we showed the overlay, force a redraw.
+                        if shutdown_overlay_active:
+                            shutdown_overlay_active = False
+                            display_dirty = True
+                        button_hold_start = 0.0
+            # If shutdown has been initiated we keep displaying the final frame
+            # and skip the rest of the loop until systemd kills us.
+            if shutdown_initiated:
+                time.sleep(poll_interval)
+                continue
+            if shutdown_overlay_active:
+                # The overlay is already drawn above; skip the normal render
+                # paths for this iteration so they don't clobber it.
+                time.sleep(poll_interval)
+                continue
             # --- Screensaver activation check (runs from any mode) ---
             if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
                 screensaver_active = True

@@ -58,6 +58,24 @@ sed -i "s|User=pi|User=$TARGET_USER|" /etc/systemd/system/$SERVICE_FILE || true
 sed -i "s|Group=pi|Group=$TARGET_USER|" /etc/systemd/system/$SERVICE_FILE || true
 systemctl daemon-reload
 systemctl enable $SERVICE_FILE
+
+# Install sudoers drop-in so the service user can poweroff without a password
+# (used by the long-press-to-shutdown feature). Validated before install.
+SUDOERS_SRC="$REPO_DIR/departure-board-shutdown.sudoers"
+SUDOERS_DST="/etc/sudoers.d/departure-board-shutdown"
+if [[ -f "$SUDOERS_SRC" ]]; then
+  # Patch the username in the drop-in if TARGET_USER isn't 'mk'.
+  TMP_SUDOERS=$(mktemp)
+  sed "s|^mk ALL=|${TARGET_USER} ALL=|" "$SUDOERS_SRC" > "$TMP_SUDOERS"
+  if visudo -cf "$TMP_SUDOERS" >/dev/null; then
+    install -m 440 -o root -g root "$TMP_SUDOERS" "$SUDOERS_DST"
+    echo "Installed sudoers rule at $SUDOERS_DST (allows $TARGET_USER to run /sbin/poweroff)."
+  else
+    echo "WARNING: $SUDOERS_SRC failed visudo check; long-press shutdown will NOT work." >&2
+  fi
+  rm -f "$TMP_SUDOERS"
+fi
+
 # Don't start yet; allow editing ExecStart first if needed.
 echo "Service installed but not started. Edit /etc/systemd/system/$SERVICE_FILE then run: systemctl start departure-board.service"
 echo "(Using virtual environment at $VENV_DIR)"

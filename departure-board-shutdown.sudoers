@@ -1,0 +1,11 @@
+# Allow the departure-board service user to power off the Pi without a
+# password. Required by the long-press-to-shutdown feature in app.py.
+#
+# Install to /etc/sudoers.d/ with mode 440. Validate with `visudo -c` first.
+# Example:
+#   sudo install -m 440 -o root -g root \
+#       /home/mk/departure-board/departure-board-shutdown.sudoers \
+#       /etc/sudoers.d/departure-board-shutdown
+#
+# Adjust the username if your service runs as a different user.
+mk ALL=(ALL) NOPASSWD: /sbin/poweroff

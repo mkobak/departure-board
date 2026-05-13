@@ -301,6 +301,10 @@ class RotaryEncoder:
             raise
         # _running is already set True in the branches above
 
+    def is_button_down(self) -> bool:
+        """Return True while the button is physically held down (debounced)."""
+        return bool(self._button_down)
+
     def stop(self) -> None:
         if not _HAVE_GPIO:
             return

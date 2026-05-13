@@ -164,6 +164,29 @@ Run `python matrix_departure_board.py --help` for the full list.
 
 A rotary encoder can cycle among predefined stops. Each detent advances to the next stop;
 button press toggles the departure page. Double-click enters the game menu.
+**Long-press (~3 seconds) triggers a clean shutdown** — see the section below.
+
+## Safe Shutdown (Long-Press)
+
+Hold the encoder button for ~3 seconds to cleanly power off the Pi. After about
+1 second a "Shutting down" message with a progress bar appears on the panel;
+keep holding to confirm. Release before the bar fills to abort. Once the panel
+goes dark you can safely unplug. This avoids the SD-card corruption that hard
+power-cuts can cause.
+
+### One-time setup (already done by `install_on_pi.sh`)
+
+The service user needs passwordless access to `/sbin/poweroff`:
+
+```bash
+sudo install -m 440 -o root -g root \
+    ~/departure-board/departure-board-shutdown.sudoers \
+    /etc/sudoers.d/departure-board-shutdown
+sudo visudo -c   # should print "parsed OK" for the new file
+```
+
+If you run the service as a user other than `mk`, edit the username in
+[departure-board-shutdown.sudoers](departure-board-shutdown.sudoers) before installing.
 
 ### Default GPIOs (BCM numbering)
 
