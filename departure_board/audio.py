@@ -118,43 +118,53 @@ _BUILTIN_SOUNDS: Dict[str, "callable"] = {
     ),
     # Bootup: ascending 4-note arpeggio C5-E5-G5-C6.
     'bootup': lambda: _concat(
-        _tone(523.25, 0.09, volume=0.45, shape='square'),
-        _tone(659.25, 0.09, volume=0.45, shape='square'),
-        _tone(783.99, 0.09, volume=0.45, shape='square'),
-        _tone(1046.50, 0.18, volume=0.5, shape='square'),
+        _tone(523.25, 0.09, volume=0.28, shape='square'),
+        _tone(659.25, 0.09, volume=0.28, shape='square'),
+        _tone(783.99, 0.09, volume=0.28, shape='square'),
+        _tone(1046.50, 0.18, volume=0.32, shape='square'),
     ),
     # --- Snake ---
     # Eat: short rising blip (Pac-Man dot feel).
     'snake_eat': lambda: _sweep(700.0, 1400.0, 0.07, volume=0.45, shape='square'),
     # Die: descending death sweep.
     'snake_die': lambda: _concat(
-        _sweep(700.0, 110.0, 0.45, volume=0.5, shape='square'),
+        _sweep(700.0, 110.0, 0.45, volume=0.3, shape='square'),
         _silence(0.04),
-        _tone(82.0, 0.18, volume=0.45, shape='square'),
+        _tone(82.0, 0.18, volume=0.25, shape='square'),
     ),
     # --- Breakout ---
-    # Paddle hit: low thunk.
-    'breakout_paddle': lambda: _tone(180.0, 0.035, volume=0.55, shape='square'),
+    # Paddle hit: percussive low square. Short attack/release so the body of
+    # the tone is audible (the default 20ms release eats short sounds). 220Hz
+    # rather than 180Hz because most small USB speakers roll off below ~200Hz.
+    'breakout_paddle': lambda: _tone(220.0, 0.06, volume=0.75, shape='square',
+                                      attack_s=0.002, release_s=0.005),
     # Brick break: pitched per tier (0=top/red highest, 4=bottom/blue lowest).
-    'breakout_brick_0': lambda: _tone(1320.0, 0.04, volume=0.45, shape='square'),
-    'breakout_brick_1': lambda: _tone(1100.0, 0.04, volume=0.45, shape='square'),
-    'breakout_brick_2': lambda: _tone(880.0, 0.04, volume=0.45, shape='square'),
-    'breakout_brick_3': lambda: _tone(700.0, 0.045, volume=0.45, shape='square'),
-    'breakout_brick_4': lambda: _tone(550.0, 0.045, volume=0.45, shape='square'),
+    # Frequencies are kept above 600Hz so all tiers are audible on USB speakers,
+    # while still giving a clear pitch progression across rows.
+    'breakout_brick_0': lambda: _tone(1320.0, 0.07, volume=0.7, shape='square',
+                                       attack_s=0.002, release_s=0.005),
+    'breakout_brick_1': lambda: _tone(1100.0, 0.07, volume=0.7, shape='square',
+                                       attack_s=0.002, release_s=0.005),
+    'breakout_brick_2': lambda: _tone(900.0, 0.07, volume=0.7, shape='square',
+                                       attack_s=0.002, release_s=0.005),
+    'breakout_brick_3': lambda: _tone(750.0, 0.07, volume=0.7, shape='square',
+                                       attack_s=0.002, release_s=0.005),
+    'breakout_brick_4': lambda: _tone(620.0, 0.07, volume=0.7, shape='square',
+                                       attack_s=0.002, release_s=0.005),
     # Wall bounce: very short click. (Currently unused — kept for future opt-in.)
     'breakout_wall': lambda: _tone(440.0, 0.02, volume=0.35, shape='square'),
     # Lose a life: descending warble.
     'breakout_lose_life': lambda: _concat(
-        _tone(440.0, 0.10, volume=0.5, shape='square'),
-        _tone(330.0, 0.10, volume=0.5, shape='square'),
-        _tone(220.0, 0.18, volume=0.5, shape='square'),
+        _tone(440.0, 0.10, volume=0.3, shape='square'),
+        _tone(330.0, 0.10, volume=0.3, shape='square'),
+        _tone(220.0, 0.18, volume=0.3, shape='square'),
     ),
     # Game over: longer, more dramatic descent.
     'breakout_game_over': lambda: _concat(
-        _tone(523.25, 0.12, volume=0.5, shape='square'),
-        _tone(392.00, 0.12, volume=0.5, shape='square'),
-        _tone(311.13, 0.12, volume=0.5, shape='square'),
-        _tone(196.00, 0.28, volume=0.5, shape='square'),
+        _tone(523.25, 0.12, volume=0.3, shape='square'),
+        _tone(392.00, 0.12, volume=0.3, shape='square'),
+        _tone(311.13, 0.12, volume=0.3, shape='square'),
+        _tone(196.00, 0.28, volume=0.3, shape='square'),
     ),
     # Level cleared: triumphant ascending arpeggio.
     'breakout_level': lambda: _concat(
