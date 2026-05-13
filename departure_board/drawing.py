@@ -19,7 +19,29 @@ from .renderer import Renderer, make_draw_helpers
 from .weather import ICON_SIZE, WEATHER_ICONS, WeatherData
 
 
-def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], header_text: str, city_reference: str, now_text: Optional[str] = None):
+def _overlay_audio_warning(off, renderer: Renderer) -> None:
+    """Paint a tiny red 'speaker with slash' icon in the bottom-right corner
+    to signal that the configured audio device is missing. 5x5 pixels.
+    """
+    # Pattern: speaker triangle with a diagonal slash across it.
+    #  X = red
+    pattern = [
+        "..X.X",
+        ".XX.X",
+        "XXXX.",
+        ".XX.X",
+        "..X.X",
+    ]
+    red = (200, 0, 0)
+    x0 = renderer.cols - BOARD_MARGIN - 5
+    y0 = renderer.rows - BOARD_MARGIN - 5
+    for dy, row in enumerate(pattern):
+        for dx, ch in enumerate(row):
+            if ch == 'X':
+                off.SetPixel(x0 + dx, y0 + dy, *red)
+
+
+def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], header_text: str, city_reference: str, now_text: Optional[str] = None, audio_warning: bool = False):
     """Draw a complete departure frame.
 
     off: off-screen canvas (re-used each frame)
@@ -152,10 +174,13 @@ def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], head
         # ensure one spacing pixel exists (already accounted in total width calc)
         draw_glyph(apostrophe_x, y, "'")
 
+    if audio_warning:
+        _overlay_audio_warning(off, renderer)
+
     return matrix.SwapOnVSync(off)
 
 
-def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weather: Optional[WeatherData], now_text: Optional[str] = None):
+def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weather: Optional[WeatherData], now_text: Optional[str] = None, audio_warning: bool = False):
     """Draw a weather screen with header and a simple pictogram."""
     off.Fill(0, 0, 0)
     amber = (255, 140, 0)
@@ -249,6 +274,9 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
     draw_text(text_x, CONTENT_Y, truncate(line1, max(0, r.cols - text_x - BOARD_MARGIN)))
     draw_text(text_x, CONTENT_Y + CHAR_H + 3, truncate(line2, max(0, r.cols - text_x - BOARD_MARGIN)))
     draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), truncate(line3, max(0, r.cols - text_x - BOARD_MARGIN)))
+
+    if audio_warning:
+        _overlay_audio_warning(off, renderer)
 
     return matrix.SwapOnVSync(off)
 

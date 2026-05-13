@@ -202,6 +202,10 @@ class AudioPlayer:
         self._active: List[subprocess.Popen] = []
         self._max_concurrent: int = 4
         self._aplay = shutil.which('aplay')
+        # Availability of the configured ALSA card. Updated by check_availability().
+        # Defaults to True so the warning icon doesn't flicker on at startup
+        # before the first check has run.
+        self._available: bool = True
         if self.enabled and self._aplay is None:
             print('[audio] aplay not found on PATH; audio disabled', file=sys.stderr)
             self.enabled = False
@@ -227,6 +231,41 @@ class AudioPlayer:
         """Register or replace a named sound with a WAV file on disk."""
         if path and os.path.isfile(path):
             self._sounds[name] = path
+
+    def is_available(self) -> bool:
+        """Cached result of the most recent check_availability() call."""
+        return self._available
+
+    def check_availability(self) -> bool:
+        """Verify the configured ALSA card is present on /proc/asound/cards.
+
+        If a specific device was configured (e.g. plughw:CARD=UACDemoV10,DEV=0)
+        we look for that card name. Otherwise we accept any non-HDMI card.
+        Updates self._available and returns it. Cheap to call (just reads a
+        ~200-byte proc file), so the main loop can poll periodically.
+        """
+        if not self.enabled or self._aplay is None:
+            self._available = False
+            return False
+        try:
+            with open('/proc/asound/cards') as f:
+                content = f.read()
+        except Exception:  # noqa: BLE001
+            self._available = False
+            return False
+        target = None
+        if self.device and 'CARD=' in self.device:
+            target = self.device.split('CARD=', 1)[1].split(',', 1)[0]
+        if target:
+            self._available = target in content
+        else:
+            non_hdmi = [
+                line for line in content.splitlines()
+                if line.lstrip().startswith(tuple('0123456789'))
+                and 'hdmi' not in line.lower()
+            ]
+            self._available = bool(non_hdmi)
+        return self._available
 
     def _in_quiet_hours(self, now: Optional[datetime] = None) -> bool:
         if self.quiet_start_hour == self.quiet_end_hour:

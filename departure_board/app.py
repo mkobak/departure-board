@@ -996,8 +996,14 @@ def run_loop(opts: argparse.Namespace):
     def _play_bootup_deferred():
         if _bootup_delay > 0:
             time.sleep(_bootup_delay)
+        # Refresh availability before the first chime; same call is also
+        # polled by the main loop so the warning icon stays in sync if the
+        # device disappears later.
+        audio.check_availability()
         audio.play('bootup')
     threading.Thread(target=_play_bootup_deferred, daemon=True).start()
+    last_audio_check_ts: float = 0.0
+    AUDIO_CHECK_INTERVAL_S: float = 30.0
 
     # Telegram bot poller
     _telegram_token = getattr(opts, 'telegram_token', '')
@@ -1188,7 +1194,7 @@ def run_loop(opts: argparse.Namespace):
     offscreen = matrix.CreateFrameCanvas()
     # On very early boot, show real clock immediately in auto/skip modes; placeholder only in strict mode without sync
     initial_now = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
-    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=initial_now)  # blank first frame, clears stale panel content
+    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=initial_now, audio_warning=not audio.is_available())  # blank first frame, clears stale panel content
     # Kick off the first fetch immediately if clock is usable
     if time_is_synchronized():
         start_fetch()
@@ -1231,6 +1237,16 @@ def run_loop(opts: argparse.Namespace):
                         display_dirty = True
             except queue.Empty:
                 pass
+            # --- Periodic audio availability poll ---------------------------
+            # The Jieli USB DAC occasionally drops off the bus; refresh the
+            # cached state every AUDIO_CHECK_INTERVAL_S so the warning icon
+            # stays in sync. Cheap (reads /proc/asound/cards).
+            if (now - last_audio_check_ts) >= AUDIO_CHECK_INTERVAL_S:
+                prev = audio.is_available()
+                audio.check_availability()
+                last_audio_check_ts = now
+                if audio.is_available() != prev:
+                    display_dirty = True
             # --- Long-press shutdown detection -------------------------------
             # While the encoder button is physically held, count up; show an
             # overlay after SHUTDOWN_ARM_S to confirm intent, trigger poweroff
@@ -1491,9 +1507,9 @@ def run_loop(opts: argparse.Namespace):
                             w_data = w_new
                         except Exception as e:  # noqa: BLE001
                             print(f"[weather] fetch error for {key}: {e}", file=sys.stderr)
-                    offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override)
+                    offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override, audio_warning=not audio.is_available())
                 else:
-                    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override)
+                    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override, audio_warning=not audio.is_available())
                 last_rendered_minute = current_minute
                 display_dirty = False
             # If time just became synchronized and we have no departures yet, force a fetch asap
