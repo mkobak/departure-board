@@ -47,6 +47,7 @@ from .drawing import (
     draw_telegram_frame, draw_menu_frame, draw_username_frame,
     screensaver_random_pos, _start_telegram_poller,
 )
+from .audio import AudioPlayer
 
 
 def run_loop(opts: argparse.Namespace):
@@ -963,6 +964,13 @@ def run_loop(opts: argparse.Namespace):
                 encoder = None
         threading.Thread(target=_start_encoder, daemon=True).start()
 
+    # Audio player (notification chime + game sounds). Safe no-op if disabled or aplay missing.
+    audio = AudioPlayer(
+        enabled=not getattr(opts, 'no_audio', False),
+        device=getattr(opts, 'audio_device', '') or None,
+        overrides={'notification': getattr(opts, 'telegram_sound', '') or ''},
+    )
+
     # Telegram bot poller
     _telegram_token = getattr(opts, 'telegram_token', '')
     if _telegram_token:
@@ -1175,6 +1183,7 @@ def run_loop(opts: argparse.Namespace):
             try:
                 while True:
                     new_msg = telegram_queue.get_nowait()
+                    audio.play('notification')
                     if game_mode == "username":
                         new_name = new_msg.strip()
                         if new_name and new_name not in username_list:
@@ -1468,6 +1477,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Telegram Bot API token (enables message overlay feature)')
     p.add_argument('--telegram-chat-id', default='',
                    help='Comma-separated Telegram chat IDs to accept messages from (leave empty to allow all)')
+    # Audio options (notification chime + game sounds). Uses ALSA aplay.
+    p.add_argument('--no-audio', action='store_true',
+                   help='Disable all sound output (notification chime and game sounds)')
+    p.add_argument('--audio-device', default='',
+                   help='ALSA device for audio output, e.g. "plughw:CARD=USB,DEV=0". '
+                        'Run "aplay -l" on the Pi to list cards. Leave empty for system default.')
+    p.add_argument('--telegram-sound', default='',
+                   help='Path to a custom WAV file to play on incoming Telegram messages. '
+                        'Leave empty to use the built-in chime.')
     return p.parse_args(argv)
 
 
@@ -1497,5 +1515,11 @@ def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover
         opts.telegram_token = env['TELEGRAM_TOKEN']
     if not opts.telegram_chat_id and env.get('TELEGRAM_CHAT_ID'):
         opts.telegram_chat_id = env['TELEGRAM_CHAT_ID']
+    if not getattr(opts, 'audio_device', '') and env.get('AUDIO_DEVICE'):
+        opts.audio_device = env['AUDIO_DEVICE']
+    if not getattr(opts, 'telegram_sound', '') and env.get('TELEGRAM_SOUND'):
+        opts.telegram_sound = env['TELEGRAM_SOUND']
+    if env.get('NO_AUDIO', '').strip().lower() in ('1', 'true', 'yes'):
+        opts.no_audio = True
     run_loop(opts)
     return 0

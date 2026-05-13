@@ -199,6 +199,36 @@ python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 3. Incoming messages display as a 30-second overlay on the board.
 4. When in the game menu, messages set the player name (first 6 characters).
 
+## Audio (Notification + Game Sounds)
+
+A USB speaker plugged into the Pi will play a short chime when a Telegram
+message arrives. Game sound effects use the same player.
+
+### Find your USB device
+
+```bash
+aplay -l
+```
+
+Look for the USB speaker's card name, then pass it as an ALSA device string,
+for example `plughw:CARD=USB,DEV=0`. If you only have one output device, you
+can omit this and the system default will be used.
+
+### CLI flags
+
+```
+--no-audio                   Disable all sound output
+--audio-device DEV           ALSA device (e.g. plughw:CARD=USB,DEV=0)
+--telegram-sound PATH        Custom WAV for the notification chime
+```
+
+These can also be set via `.env` as `AUDIO_DEVICE`, `TELEGRAM_SOUND`, `NO_AUDIO=1`.
+
+### Requirements
+
+`aplay` (from `alsa-utils`) must be on the Pi. It's preinstalled on Raspberry
+Pi OS. If `aplay` is missing, audio is silently disabled.
+
 ## Developer Mode (No Hardware)
 
 If `rgbmatrix` is not available, the script prints departures to stdout every cycle.
