@@ -13,7 +13,7 @@ Group=mk
 # Working directory with virtual environment
 WorkingDirectory=/home/mk/departure-board
 # Use the virtual environment python so requests (and future deps) are isolated (PEP 668 compliant)
-ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 65 --gpio-mapping adafruit-hat --encoder-delay 0.25 --enc-clk 10 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --slowdown-gpio 1 --pwm-lsb-ns 50 --pwm-bits 7 --limit-refresh-hz 200 --ntp-wait-mode auto --screensaver-timeout 300 --screensaver-brightness 33 --screensaver-brightness-night 33 --night-brightness 43 --night-start 21 --night-end 6 --encoder-debug
+ExecStart=/home/mk/departure-board/.venv/bin/python /home/mk/departure-board/matrix_departure_board.py --stop "Basel, Aeschenplatz" --limit 4 --brightness 69 --gpio-mapping adafruit-hat --encoder-delay 0.25 --enc-clk 10 --enc-dt 9 --enc-sw 11 --enc-steps-per-detent 1 --enc-poll --rotate-min-interval 0.10 --rotate-fetch-delay 0.5 --dither-bits 0 --slowdown-gpio 1 --pwm-lsb-ns 50 --pwm-bits 7 --limit-refresh-hz 190 --ntp-wait-mode auto --screensaver-timeout 300 --screensaver-brightness 36 --screensaver-brightness-night 36 --night-brightness 46 --night-start 21 --night-end 6
 Restart=on-failure
 RestartSec=5
 Environment=TZ=Europe/Zurich

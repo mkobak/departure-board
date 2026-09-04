@@ -380,8 +380,13 @@ at 130 Hz and each dropped bit plane gained only ~6 Hz. Halving the LSB to 50 ns
 minimum) gave 220 Hz and removed the visible flicker; `--slowdown-gpio 0` smears the image on
 this panel. A shorter LSB lowers the duty cycle, so `--brightness` was raised 60 -> 65 (night
 40 -> 43, screensaver 30 -> 33) to keep the same light output. `--limit-refresh-hz 200` pins
-the rate just under the maximum so it stays constant. `isolcpus=3` in `cmdline.txt` and the
-`performance` CPU governor are also set on the Pi. Measured 2026-09-04.
+the rate below the maximum so it stays constant and short stalls are absorbed. On the Pi,
+`cmdline.txt` carries the library's recommended core isolation
+`isolcpus=domain,managed_irq,3 nohz_full=3 rcu_nocbs=3 irqaffinity=0,1,2` (plain `isolcpus=3`
+leaves interrupts and the timer tick on the refresh core, which shows as a brief dip every
+few seconds), the CPU governor is `performance`, and WiFi power saving is off. Do not run the
+service with `--encoder-debug`: it logs five lines per second to the journal and the periodic
+journal flush to the SD card stalls the refresh thread. Measured 2026-09-04.
 
 ## Uninstall
 
