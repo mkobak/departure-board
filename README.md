@@ -251,9 +251,13 @@ built from the 15-minute forecast:
 | `No rain today` | nothing above the threshold for the rest of today |
 | `Rain tomorrow 09:00` / `No rain tomorrow` | from 20:00 the outlook covers tonight and tomorrow |
 
-`Snow` replaces `Rain` when the slot reports snowfall. A slot counts as wet at
-`PRECIP_THRESHOLD_MM` (0.1 mm per 15 min); the evening switch hour is `PRECIP_EVENING_HOUR`.
-Both live in [departure_board/weather.py](departure_board/weather.py). The line is recomputed
+`Snow` replaces `Rain` when the slot reports snowfall. A 15-minute slot counts as wet only if
+it has at least `PRECIP_THRESHOLD_MM` (0.1 mm), the hour starting there totals at least
+`PRECIP_HOUR_MIN_MM` (0.3 mm), and the model's precipitation probability is at least
+`PRECIP_MIN_PROBABILITY` (35%). The last two filter isolated 0.1 mm traces and low-confidence
+drizzle that other weather services report as dry, while light rain of ~0.5 mm/h still shows.
+The evening switch hour is `PRECIP_EVENING_HOUR`. All live in
+[departure_board/weather.py](departure_board/weather.py). The line is recomputed
 on every redraw from the cached forecast, so `from`/`until` times stay correct between fetches.
 
 ## Screensaver, Reminders & Night Dimming

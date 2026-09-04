@@ -7,9 +7,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 # Precipitation summary line ("Rain from 13:45" etc.) --------------------------
-# A 15-minute slot counts as wet when it has at least this much precipitation.
-# 0.1 mm is the smallest non-zero value the model reports (drizzle).
+# A 15-minute slot counts as wet when ALL of these hold:
+#  - the slot itself has at least PRECIP_THRESHOLD_MM (0.1 mm is the model's smallest value),
+#  - the hour starting at that slot totals at least PRECIP_HOUR_MIN_MM (filters isolated
+#    0.1 mm traces and all-day drizzle that other services report as "no rain"; light
+#    rain of ~0.5 mm/h and up still passes),
+#  - the model's precipitation probability for the slot is at least PRECIP_MIN_PROBABILITY
+#    percent (skipped when the API returns no probability).
 PRECIP_THRESHOLD_MM = 0.1
+PRECIP_HOUR_MIN_MM = 0.3
+PRECIP_MIN_PROBABILITY = 35
 # From this hour on the summary looks at tomorrow instead of the rest of today.
 PRECIP_EVENING_HOUR = 20
 
@@ -88,7 +95,7 @@ def fetch_weather(lat: float, lon: float, timeout: float = 6.0) -> WeatherData:
         '&current=temperature_2m,weather_code,relative_humidity_2m,apparent_temperature,wind_speed_10m'
         '&daily=temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_probability_max'
         # 15-minute precipitation for today and tomorrow (192 slots, ~7 KB)
-        '&minutely_15=precipitation,snowfall&forecast_days=2'
+        '&minutely_15=precipitation,snowfall,precipitation_probability&forecast_days=2'
         f'&timezone={tz}'
     )
     # Split timeouts similar to departures
@@ -129,8 +136,8 @@ def fetch_weather(lat: float, lon: float, timeout: float = 6.0) -> WeatherData:
     return out
 
 
-# (slot start time in local time, precipitation mm, snowfall cm)
-PrecipSlot = Tuple[datetime, float, float]
+# (slot start time in local time, precipitation mm, snowfall cm, probability % or None)
+PrecipSlot = Tuple[datetime, float, float, Optional[float]]
 
 
 def _parse_minutely(m: Dict[str, Any]) -> List[PrecipSlot]:
@@ -138,6 +145,7 @@ def _parse_minutely(m: Dict[str, Any]) -> List[PrecipSlot]:
     times = m.get('time') or []
     precip = m.get('precipitation') or []
     snow = m.get('snowfall') or []
+    prob = m.get('precipitation_probability') or []
     out: List[PrecipSlot] = []
     for i, t in enumerate(times):
         try:
@@ -146,8 +154,26 @@ def _parse_minutely(m: Dict[str, Any]) -> List[PrecipSlot]:
             continue
         p = precip[i] if i < len(precip) else None
         sn = snow[i] if i < len(snow) else None
-        out.append((ts, float(p or 0.0), float(sn or 0.0)))
+        pr = prob[i] if i < len(prob) else None
+        out.append((ts, float(p or 0.0), float(sn or 0.0), float(pr) if pr is not None else None))
     return out
+
+
+def _wet_flags(slots: List[PrecipSlot]) -> List[bool]:
+    """Per-slot 'wet' decision using the amount, hour-total and probability rules."""
+    n = len(slots)
+    flags: List[bool] = []
+    for i, s in enumerate(slots):
+        if s[1] < PRECIP_THRESHOLD_MM:
+            flags.append(False)
+            continue
+        prob = s[3] if len(s) > 3 else None
+        if prob is not None and prob < PRECIP_MIN_PROBABILITY:
+            flags.append(False)
+            continue
+        hour_total = sum(slots[j][1] for j in range(i, min(n, i + 4)))
+        flags.append(hour_total >= PRECIP_HOUR_MIN_MM)
+    return flags
 
 
 def precip_summary(slots: Optional[List[PrecipSlot]], now: Optional[datetime] = None) -> Optional[str]:
@@ -168,13 +194,15 @@ def precip_summary(slots: Optional[List[PrecipSlot]], now: Optional[datetime] = 
     evening = now.hour >= PRECIP_EVENING_HOUR
     today = now.date()
     horizon_day = today + timedelta(days=1) if evening else today
+    flags = _wet_flags(slots)
+    wet_by_time = {s[0]: f for s, f in zip(slots, flags)}
     window = [s for s in slots
               if s[0] + timedelta(minutes=15) > now and s[0].date() <= horizon_day]
     if not window:
         return None
 
     def wet(s: PrecipSlot) -> bool:
-        return s[1] >= PRECIP_THRESHOLD_MM
+        return wet_by_time.get(s[0], False)
 
     def kind(s: PrecipSlot) -> str:
         return 'Snow' if s[2] > 0 else 'Rain'
