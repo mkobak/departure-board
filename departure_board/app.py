@@ -253,6 +253,12 @@ def run_loop(opts: argparse.Namespace):
     # Weather cache
     weather_cache: Dict[str, Dict[str, Any]] = {}
     # keys -> {'data': WeatherData|None, 'ts': float}
+    # Departures cache per screen (key: header). When switching back to a stop seen
+    # recently, its last list is shown immediately (minutes recomputed locally) while
+    # a fresh fetch runs, instead of a loading spinner.
+    dep_cache: Dict[str, Dict[str, Any]] = {}
+    # keys -> {'rows': List[row], 'ts': float}
+    DEP_CACHE_MAX_AGE_S: float = 600.0
 
     def _refresh_departure_mins():
         """Recompute minutes-to-departure locally from each row's absolute departure
@@ -641,11 +647,16 @@ def run_loop(opts: argparse.Namespace):
         nonlocal current_index, active_screen, departures, departures_all, page_toggle, force_first_page, display_dirty
         current_index = (current_index + (1 if direction > 0 else -1)) % len(screens)
         active_screen = screens[current_index]
-        # Blank departures immediately - display will show empty area for half second
-        departures = []
-        departures_all = []
         page_toggle = 0  # reset to first page on stop change
         force_first_page = True  # ensure the new stop displays page 0 until next rotation
+        # Show the stop's recently fetched list right away (with minutes recomputed from
+        # the absolute departure times); otherwise blank -> loading spinner until the fetch lands.
+        cached = dep_cache.get(active_screen.get('header', ''))
+        if cached and (time.time() - cached['ts']) < DEP_CACHE_MAX_AGE_S:
+            departures_all = fd.refresh_mins(cached['rows'])
+        else:
+            departures_all = []
+        departures = departures_all[:opts.limit]
         display_dirty = True
         schedule_fetch(rotate_fetch_delay)
 
@@ -1238,6 +1249,7 @@ def run_loop(opts: argparse.Namespace):
                 else:
                     rows_local = fetch_rows(screen_snapshot, timeout=current_fetch_timeout)
                     # Only apply if still on the same screen
+                    dep_cache[screen_snapshot.get('header', '')] = {'rows': list(rows_local), 'ts': time.time()}
                     if screen_snapshot is active_screen or screen_snapshot.get('header') == active_screen.get('header'):
                         departures_all[:] = rows_local
                         _update_display_rows_from_page()

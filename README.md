@@ -227,7 +227,9 @@ python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 
 While the board waits for data (after a stop change, on wake from the screensaver, at boot,
 or on a weather screen with nothing cached) it shows a small rotating circle in the middle
-of the content area. It disappears as soon as the fetch lands; if a stop legitimately has no
+of the content area. Each stop's last list is remembered for 10 minutes, so switching back
+to a recently viewed stop shows it immediately (minutes recomputed from the stored departure
+times) while a fresh fetch runs in the background; only stops not seen recently get the spinner. It disappears as soon as the fetch lands; if a stop legitimately has no
 departures (late night) the list is simply empty and is re-checked once per `--refresh`.
 
 Each stationboard row from transport.opendata.ch is ~7-8 KB of JSON (it carries the full
