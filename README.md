@@ -365,12 +365,23 @@ python tools/panel_test_fill.py --help   # Test panel with solid color fill
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No output / all dark | Service not running or crash | `journalctl -u departure-board.service -f` |
-| Flicker / tearing | Refresh rate too high | Lower `--brightness`; keep `--limit-refresh-hz` moderate |
+| Flicker | Refresh rate too low (measure with `--show-refresh`) | Lower `--pwm-lsb-ns` (50 is the library minimum); see the note below |
 | Dark panel at night / dim screensaver invisible | Value below the PWM floor for `--pwm-bits` | Check `journalctl` for `[brightness] WARNING`; raise `--night-brightness` / `--screensaver-brightness-night` |
 | Wrong colors / mapping | Mapping flag mismatch | Try `--gpio-mapping adafruit-hat` |
 | Text truncated too much | Panel size or chain mismatch | Adjust `--cols`/`--rows`/`--chain`/`--parallel` |
 | ImportError rgbmatrix | Binding not installed in venv | Rebuild with venv python & reinstall |
 | API errors / 429 | Too many requests | Increase `--refresh` interval (>=30s) |
+
+**Refresh rate and flicker (Pi Zero 2 W, 128x64 panel).** The library doubles the OE pulse
+across all 11 internal bit planes starting from `--pwm-lsb-ns`, and `--pwm-bits N` only drops
+the *shortest* planes. With 7 bits the displayed pulses are lsb x 16 ... lsb x 1024, so the
+frame time is dominated by the long pulses, not by shifting data: at lsb 100 ns the panel ran
+at 130 Hz and each dropped bit plane gained only ~6 Hz. Halving the LSB to 50 ns (the library
+minimum) gave 220 Hz and removed the visible flicker; `--slowdown-gpio 0` smears the image on
+this panel. A shorter LSB lowers the duty cycle, so `--brightness` was raised 60 -> 65 (night
+40 -> 43, screensaver 30 -> 33) to keep the same light output. `--limit-refresh-hz 200` pins
+the rate just under the maximum so it stays constant. `isolcpus=3` in `cmdline.txt` and the
+`performance` CPU governor are also set on the Pi. Measured 2026-09-04.
 
 ## Uninstall
 

@@ -919,6 +919,11 @@ def run_loop(opts: argparse.Namespace):
     options.brightness = opts.brightness
     # Allow user override of PWM / refresh tuning.
     if opts.pwm_lsb_ns is not None:
+        # The library rejects values outside 50..3000 and the Python binding then
+        # segfaults on the unusable matrix object, so fail with a clear message.
+        if not (50 <= int(opts.pwm_lsb_ns) <= 3000):
+            print(f"[matrix] --pwm-lsb-ns {opts.pwm_lsb_ns} out of range (50..3000)", file=sys.stderr)
+            sys.exit(2)
         options.pwm_lsb_nanoseconds = opts.pwm_lsb_ns
     else:
         options.pwm_lsb_nanoseconds = 130
