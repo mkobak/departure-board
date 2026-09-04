@@ -223,6 +223,19 @@ Pass `--enc-poll` if interrupts fail or you need deterministic polling.
 python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 ```
 
+## Loading Indicator & Fetch Size
+
+While the board waits for data (after a stop change, on wake from the screensaver, at boot,
+or on a weather screen with nothing cached) it shows a small rotating circle in the middle
+of the content area. It disappears as soon as the fetch lands; if a stop legitimately has no
+departures (late night) the list is simply empty and is re-checked once per `--refresh`.
+
+Each stationboard row from transport.opendata.ch is ~7-8 KB of JSON (it carries the full
+pass list), so the board asks for only `2 * --limit + 4` rows per tram stop (~120 KB) and
+seven times that for the Basel -> Zürich screen, which filters by destination client-side.
+Both API clients keep one HTTPS connection alive across fetches to skip the TLS handshake.
+Server time is ~1.1 s per request regardless of size, so that is the floor.
+
 ## Weather Screens
 
 Two weather screens (Basel, Zürich) use Open-Meteo (no API key). Besides the current

@@ -15,6 +15,7 @@ from __future__ import annotations
 import sys
 import argparse
 import re
+import time
 import unicodedata
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
@@ -35,6 +36,8 @@ DESTINATION_FILTER: Optional[str] = None
 
 # Number of departures to fetch
 LIMIT = 4
+# Departures closer than this are dropped (not reachable in time).
+MIN_MINS = 3
 
 # Restrict to certain transport types (API expects repeated key transportations[])
 # Examples: ["tram"], ["bus"], ["train"], ["tram", "train"]. Set to None for all.
@@ -62,6 +65,17 @@ def _default_ca_bundle() -> str | None:
     return None
 
 
+_SESSION: Optional["requests.Session"] = None
+
+
+def _session() -> "requests.Session":
+    """Shared keep-alive session: skips DNS + TLS handshake on repeat fetches."""
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = requests.Session()
+    return _SESSION
+
+
 def fetch_stationboard(
     station: str,
     limit: int = 8,
@@ -79,8 +93,10 @@ def fetch_stationboard(
     timeout can be a single float (seconds) or a (connect, read) tuple forwarded
     to requests.get for finer control during boot.
     """
+    # Each stationboard row is ~7-8 KB of JSON (full pass list), so keep the
+    # over-fetch small: a few extra rows cover departures dropped by the MIN_MINS filter.
     display_limit = limit
-    fetch_buffer = max(10, int(display_limit * 2))
+    fetch_buffer = 4
     fetch_limit = display_limit + fetch_buffer
     params: Dict[str, Any] = {"station": station, "limit": fetch_limit}
     if transportations:
@@ -93,7 +109,7 @@ def fetch_stationboard(
         verify_param: bool | str = ca if ca else True
     else:  # verify explicitly False or custom path string
         verify_param = verify if verify is not None else True
-    r = requests.get(API_URL, params=params, timeout=timeout, verify=verify_param)
+    r = _session().get(API_URL, params=params, timeout=timeout, verify=verify_param)
     r.raise_for_status()
     data = r.json()
     rows: List[Dict[str, Any]] = []
@@ -123,13 +139,39 @@ def fetch_stationboard(
             "mins": mins,
             "delay": delay,
             "plat": plat,
+            "dep_ts": dep.timestamp(),  # absolute departure time (POSIX) for local re-computation
         })
-    rows = [r for r in rows if r["mins"] >= 3]
+    rows = [r for r in rows if r["mins"] >= MIN_MINS]
     # Sort by actual minutes-to-departure. 'mins' is computed from prognosis/departure,
     # which already reflects delays when prognosis is present. Sorting by 'mins' avoids
     # inversions like 4' appearing below 5' when a separate 'delay' is added to the key.
     rows.sort(key=lambda r: r.get("mins", 0))
     return rows
+
+
+def refresh_mins(rows: List[Dict[str, Any]], now_ts: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Recompute 'mins' for each row from its absolute departure time and drop
+    departures that are now closer than MIN_MINS (same rule as fetch_stationboard).
+
+    Lets the display stay accurate between fetches and immediately after waking
+    from the screensaver, instead of showing minute values frozen at fetch time.
+    Rows without 'dep_ts' are kept unchanged.
+    """
+    now_ts = time.time() if now_ts is None else now_ts
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        ts = r.get("dep_ts")
+        if ts is None:
+            out.append(r)
+            continue
+        mins = int((float(ts) - now_ts) // 60)
+        if mins < MIN_MINS:
+            continue
+        nr = dict(r)
+        nr["mins"] = mins
+        out.append(nr)
+    out.sort(key=lambda r: r.get("mins", 0))
+    return out
 
 
 def _station_city(station_name: str) -> str:

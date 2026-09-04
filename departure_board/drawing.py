@@ -41,13 +41,34 @@ def _overlay_audio_warning(off, renderer: Renderer) -> None:
                 off.SetPixel(x0 + dx, y0 + dy, *red)
 
 
-def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], header_text: str, city_reference: str, now_text: Optional[str] = None, audio_warning: bool = False):
+SPINNER_RADIUS = 6
+SPINNER_DOTS = 12
+SPINNER_TAIL = 4
+
+
+def _draw_spinner(off, cx: int, cy: int, phase: int, color: Tuple[int, int, int]) -> None:
+    """Small loading circle: SPINNER_DOTS points on a circle, SPINNER_TAIL of them lit,
+    rotating clockwise as phase increases. Full-brightness pixels only (dim levels can
+    fall below the panel's PWM floor)."""
+    import math
+    for k in range(SPINNER_TAIL):
+        i = (phase - k) % SPINNER_DOTS
+        ang = 2 * math.pi * i / SPINNER_DOTS - math.pi / 2
+        x = cx + int(round(SPINNER_RADIUS * math.cos(ang)))
+        y = cy + int(round(SPINNER_RADIUS * math.sin(ang)))
+        off.SetPixel(x, y, *color)
+
+
+def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], header_text: str, city_reference: str, now_text: Optional[str] = None, audio_warning: bool = False,
+               loading_phase: Optional[int] = None):
     """Draw a complete departure frame.
 
     off: off-screen canvas (re-used each frame)
     rows: departures (empty => blank list area)
     header_text: text to render in the header (e.g., "Basel SBB -> Zurich HB")
     city_reference: station name used for same-city destination stripping
+    loading_phase: when not None, draw a loading spinner (this animation step)
+                   centred in the list area (used while waiting for data)
     """
     # Clear quickly using Fill (avoid per-pixel loops that cost CPU and can stutter PWM thread)
     off.Fill(0, 0, 0)
@@ -174,14 +195,22 @@ def draw_frame(off, matrix, renderer: Renderer, rows: List[Dict[str, Any]], head
         # ensure one spacing pixel exists (already accounted in total width calc)
         draw_glyph(apostrophe_x, y, "'")
 
+    if loading_phase is not None:
+        _draw_spinner(off, r.cols // 2, rows_start_y + (r.rows - rows_start_y) // 2, loading_phase, amber)
+
     if audio_warning:
         _overlay_audio_warning(off, renderer)
 
     return matrix.SwapOnVSync(off)
 
 
-def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weather: Optional[WeatherData], now_text: Optional[str] = None, audio_warning: bool = False):
-    """Draw a weather screen with header and a simple pictogram."""
+def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weather: Optional[WeatherData], now_text: Optional[str] = None, audio_warning: bool = False,
+                       loading_phase: Optional[int] = None):
+    """Draw a weather screen with header and a simple pictogram.
+
+    loading_phase: when not None, draw only the header and a loading spinner
+                   (this animation step) instead of the weather content.
+    """
     off.Fill(0, 0, 0)
     amber = (255, 140, 0)
     r = renderer
@@ -240,6 +269,12 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
     # Rule
     for x in range(0, r.cols):
         off.SetPixel(x, RULE_Y, *amber)
+
+    if loading_phase is not None:
+        _draw_spinner(off, r.cols // 2, CONTENT_Y + (r.rows - CONTENT_Y) // 2, loading_phase, amber)
+        if audio_warning:
+            _overlay_audio_warning(off, renderer)
+        return matrix.SwapOnVSync(off)
 
     # Icon painter from predefined bitmap
     def draw_icon(x0: int, y0: int, kind: str):

@@ -13,6 +13,16 @@ PRECIP_THRESHOLD_MM = 0.1
 # From this hour on the summary looks at tomorrow instead of the rest of today.
 PRECIP_EVENING_HOUR = 20
 
+_SESSION: Optional["requests.Session"] = None
+
+
+def _session() -> "requests.Session":
+    """Shared keep-alive session (skips TLS handshake on repeat fetches)."""
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = requests.Session()
+    return _SESSION
+
 
 class WeatherData(Dict[str, Any]):
     pass
@@ -84,7 +94,7 @@ def fetch_weather(lat: float, lon: float, timeout: float = 6.0) -> WeatherData:
     # Split timeouts similar to departures
     connect_timeout = min(1.0, max(0.2, timeout / 3.0))
     read_timeout = max(2.5, timeout)
-    r = requests.get(url, timeout=(connect_timeout, read_timeout))
+    r = _session().get(url, timeout=(connect_timeout, read_timeout))
     r.raise_for_status()
     j = r.json()
     cur = j.get('current', {}) or j.get('current_weather', {})

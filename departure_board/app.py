@@ -138,6 +138,11 @@ def run_loop(opts: argparse.Namespace):
     screensaver_timeout: float = float(getattr(opts, 'screensaver_timeout', 600))  # seconds of inactivity
     screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 40))  # dim brightness (0-100)
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
+    # Loading spinner (shown while waiting for departures/weather after a stop change, wake, boot)
+    SPINNER_STEP_S: float = 0.1
+    spinner_phase: int = 0
+    spinner_last_step: float = 0.0
+    spinner_visible: bool = False
     screensaver_reminder: Optional[str] = None       # active reminder line (None = none)
     screensaver_reminder_xy: Optional[Tuple[int, int]] = None  # reminder line position
     force_reminder: str = str(getattr(opts, 'force_reminder', '') or '')  # debug override
@@ -249,14 +254,28 @@ def run_loop(opts: argparse.Namespace):
     weather_cache: Dict[str, Dict[str, Any]] = {}
     # keys -> {'data': WeatherData|None, 'ts': float}
 
+    def _refresh_departure_mins():
+        """Recompute minutes-to-departure locally from each row's absolute departure
+        time and drop departed rows, so the board never shows values frozen at fetch
+        time (e.g. right after waking from a long screensaver). Does not touch
+        display_dirty; callers decide when to redraw."""
+        nonlocal departures
+        if not departures_all:
+            return
+        departures_all[:] = fd.refresh_mins(departures_all)
+        effective_page = 0 if force_first_page else page_toggle
+        start = effective_page * opts.limit
+        departures = departures_all[start:start + opts.limit]
+
     def _wake_from_screensaver():
         """Wake from screensaver without performing any action."""
         nonlocal screensaver_active, last_interaction, display_dirty
         last_interaction = time.time()
         if screensaver_active:
             screensaver_active = False
+            _refresh_departure_mins()  # show correct minutes right away, not the pre-sleep ones
             display_dirty = True
-            schedule_fetch(0.0)  # refresh departures immediately on wake
+            schedule_fetch(0.0)  # then refresh departures from the API
 
     # --- Snake game helpers ---
 
@@ -1066,9 +1085,12 @@ def run_loop(opts: argparse.Namespace):
 
     # Fetch helpers
     def fetch_rows(screen: Dict[str, Any], timeout: float = 10.0) -> List[Dict[str, Any]]:
-        # Increase fetch size to ensure enough items for two pages even after filtering
-        base_fetch = max(opts.limit * 6, 40)
-        fetch_size = max(base_fetch, 60) if screen.get('dest_filter') else base_fetch
+        # Two pages of opts.limit rows plus a few spares. The transport filter is
+        # applied server-side, so tram stops need little over-fetch. The Zürich
+        # screen filters by destination client-side (~1 in 7 trains at Basel SBB
+        # goes to Zürich HB), so it needs a much larger window.
+        base_fetch = opts.limit * 2 + 4
+        fetch_size = max(base_fetch * 7, 56) if screen.get('dest_filter') else base_fetch
         # Use a short connect timeout and a moderate read timeout to avoid long stalls on boot
         connect_timeout = min(1.0, max(0.2, timeout / 3.0))
         read_timeout = max(2.5, timeout)
@@ -1224,6 +1246,11 @@ def run_loop(opts: argparse.Namespace):
                         next_periodic_refresh = last_fetch_time + fetch_interval
                         # Gradually increase timeout after a success (cap at 10s)
                         current_fetch_timeout = min(10.0, max(current_fetch_timeout, 3.0))
+                    else:
+                        # Screen changed while this fetch was running: its own scheduled
+                        # fetch was dropped (start_fetch ignores requests while in flight),
+                        # so fetch the new screen right away.
+                        schedule_fetch(0.0)
             except Exception as e:  # noqa: BLE001
                 print(f"[fetch] Error fetching departures for '{screen_snapshot.get('header','?')}': {e}", file=sys.stderr)
                 # Quick retry with exponential backoff (cap 60s); also slightly increase timeout
@@ -1571,26 +1598,44 @@ def run_loop(opts: argparse.Namespace):
             current_minute = now_txt_override or datetime.now().strftime('%H:%M')
             if current_minute != last_rendered_minute:
                 display_dirty = True
+                _refresh_departure_mins()  # keep minute values accurate between fetches
+            # --- Loading spinner state ---
+            # Departures: nothing to show yet and a fetch is pending/in flight.
+            # Weather: nothing cached for this city (stale data is shown while it refreshes
+            # in the background; the fetch worker handles weather screens too).
+            w_data: Optional[WeatherData] = None
+            if active_screen.get('type') == 'weather':
+                w_entry = weather_cache.get(f"{active_screen['city']}")
+                w_data = w_entry['data'] if w_entry else None
+                w_stale = (w_entry is None) or ((now - w_entry['ts']) >= 600)
+                if w_stale and not fetch_in_flight and not next_scheduled_fetch and time_is_synchronized():
+                    schedule_fetch(0.0)
+                loading = (w_data is None) and (fetch_in_flight or bool(next_scheduled_fetch))
+            else:
+                loading = (not departures) and (fetch_in_flight or bool(next_scheduled_fetch))
+            if loading:
+                if now - spinner_last_step >= SPINNER_STEP_S:
+                    spinner_last_step = now
+                    spinner_phase = (spinner_phase + 1) % 12
+                    display_dirty = True
+            elif spinner_visible:
+                display_dirty = True  # spinner just disappeared: redraw once without it
+            spinner_visible = loading
             # Only redraw when something changed
             if display_dirty:
+                phase = spinner_phase if loading else None
                 if active_screen.get('type') == 'weather':
-                    key = f"{active_screen['city']}"
-                    w_entry = weather_cache.get(key)
-                    w_data = w_entry['data'] if (w_entry and (now - w_entry['ts'] < 600)) else None
-                    if w_data is None and not fetch_in_flight and time_is_synchronized():
-                        try:
-                            w_new = fetch_weather_for_screen(active_screen)
-                            weather_cache[key] = {'data': w_new, 'ts': time.time()}
-                            w_data = w_new
-                        except Exception as e:  # noqa: BLE001
-                            print(f"[weather] fetch error for {key}: {e}", file=sys.stderr)
-                    offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override, audio_warning=_audio_warning_active())
+                    offscreen = draw_weather_frame(offscreen, matrix, renderer, active_screen['header'], w_data, now_text=now_txt_override, audio_warning=_audio_warning_active(), loading_phase=phase)
                 else:
-                    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override, audio_warning=_audio_warning_active())
+                    offscreen = draw_frame(offscreen, matrix, renderer, departures, active_screen['header'], active_screen['city_ref'], now_text=now_txt_override, audio_warning=_audio_warning_active(), loading_phase=phase)
                 last_rendered_minute = current_minute
                 display_dirty = False
-            # If time just became synchronized and we have no departures yet, force a fetch asap
-            if (now_txt_override is None) and not departures and not next_scheduled_fetch and not fetch_in_flight:
+            # No departures and nothing pending: fetch (e.g. time just became synchronized, or a
+            # scheduled fetch was dropped because another was in flight). Guarded by the last
+            # successful fetch time so a legitimately empty stationboard (late night) is
+            # re-checked once per refresh interval instead of in a tight loop.
+            if (now_txt_override is None) and not departures and not next_scheduled_fetch and not fetch_in_flight \
+                    and active_screen.get('type') != 'weather' and (now - last_fetch_time) >= fetch_interval:
                 schedule_fetch(0.0)
             # Sleep until the next interesting event
             t_until_fetch = max(0.0, (next_scheduled_fetch - time.time()) if next_scheduled_fetch else 1.0)
