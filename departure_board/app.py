@@ -934,6 +934,9 @@ def run_loop(opts: argparse.Namespace):
         options.pwm_bits = int(opts.pwm_bits)
     if opts.slowdown_gpio is not None:
         options.gpio_slowdown = opts.slowdown_gpio
+    # Debug: print the achieved refresh rate to stdout (manual runs only; spams the journal)
+    if getattr(opts, 'show_refresh', False):
+        options.show_refresh_rate = True
     # Only set multiplexing/scan parameters if provided; defaults vary by panel generation
     if getattr(opts, 'multiplexing', None) is not None:
         options.multiplexing = int(opts.multiplexing)
@@ -1615,6 +1618,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help='Override pwm_lsb_nanoseconds (timing of LSB pulse)')
     p.add_argument('--limit-refresh-hz', type=int, default=None,
                    help='Hard limit on refresh rate Hz (lower to reduce CPU/flicker)')
+    p.add_argument('--show-refresh', action='store_true',
+                   help='Debug: continuously print the achieved panel refresh rate (use in a manual run to pick --limit-refresh-hz)')
     p.add_argument('--dither-bits', type=int, default=None,
                    help='Override pwm dither bits (0 to disable, higher = smoother dims)')
     p.add_argument('--pwm-bits', type=int, default=None,

@@ -251,17 +251,20 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
                 if ch == '1':
                     off.SetPixel(x0 + xx, y0 + yy, *amber)
 
-    # Content text
-    # Left column: current temp above the icon
+    # Content layout: all text lines start at the same left edge; the current
+    # temperature and the icon sit in a right-hand column so the precipitation
+    # line at the bottom can run full width underneath the icon.
     kind = weather['kind'] if weather else 'cloudy'
     left_x = BOARD_MARGIN + 2
+    icon_x = r.cols - BOARD_MARGIN - 2 - ICON_SIZE      # 2px right padding like the header
+    icon_y = CONTENT_Y + CHAR_H + 2
     nowt = weather.get('now_temp') if weather else None
     cur_temp = f"{nowt}\u00b0" if nowt is not None else "--\u00b0"
-    draw_text(left_x, CONTENT_Y, truncate(cur_temp, r.cols))
-    draw_icon(left_x, CONTENT_Y + CHAR_H + 2, kind)
+    # Temperature right-aligned to the icon's right edge, above it
+    draw_text(icon_x + ICON_SIZE - measure(cur_temp), CONTENT_Y, cur_temp)
+    draw_icon(icon_x, icon_y, kind)
 
-    # Right column: Min/Max:, Wind, Real feel
-    text_x = left_x + ICON_SIZE + 8
+    # Left column: Min/Max, Wind, Real feel (kept clear of the right column)
     tmin = weather.get('tmin') if weather else None
     tmax = weather.get('tmax') if weather else None
     wind = weather.get('wind') if weather else None
@@ -271,9 +274,10 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
     line2 = f"Wind: {wind if wind is not None else '--'}" + (" km/h" if wind is not None else "")
     line3 = f"Real feel: {app if app is not None else '--'}\u00b0"
 
-    draw_text(text_x, CONTENT_Y, truncate(line1, max(0, r.cols - text_x - BOARD_MARGIN)))
-    draw_text(text_x, CONTENT_Y + CHAR_H + 3, truncate(line2, max(0, r.cols - text_x - BOARD_MARGIN)))
-    draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), truncate(line3, max(0, r.cols - text_x - BOARD_MARGIN)))
+    left_max_w = max(0, icon_x - 4 - left_x)
+    draw_text(left_x, CONTENT_Y, truncate(line1, left_max_w))
+    draw_text(left_x, CONTENT_Y + CHAR_H + 3, truncate(line2, left_max_w))
+    draw_text(left_x, CONTENT_Y + 2*(CHAR_H + 3), truncate(line3, left_max_w))
 
     # Bottom line (full width, below the icon): precipitation outlook
     line4 = precip_summary(weather.get('slots') if weather else None)
