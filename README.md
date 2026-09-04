@@ -223,6 +223,24 @@ Pass `--enc-poll` if interrupts fail or you need deterministic polling.
 python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 ```
 
+## Weather Screens
+
+Two weather screens (Basel, Zürich) use Open-Meteo (no API key). Besides the current
+temperature, min/max, wind and real-feel, the bottom line shows a precipitation outlook
+built from the 15-minute forecast:
+
+| Line | Meaning |
+|---|---|
+| `Rain from 13:45` | dry now, first wet slot today at 13:45 |
+| `Rain until 14:30` | raining now, first dry slot at 14:30 (`Rain now` if it doesn't stop today) |
+| `No rain today` | nothing above the threshold for the rest of today |
+| `Rain tomorrow 09:00` / `No rain tomorrow` | from 20:00 the outlook covers tonight and tomorrow |
+
+`Snow` replaces `Rain` when the slot reports snowfall. A slot counts as wet at
+`PRECIP_THRESHOLD_MM` (0.1 mm per 15 min); the evening switch hour is `PRECIP_EVENING_HOUR`.
+Both live in [departure_board/weather.py](departure_board/weather.py). The line is recomputed
+on every redraw from the cached forecast, so `from`/`until` times stay correct between fetches.
+
 ## Screensaver, Reminders & Night Dimming
 
 After `--screensaver-timeout` seconds without encoder input the panel shows only the
@@ -305,6 +323,16 @@ can omit this and the system default will be used.
 Audio is silenced during quiet hours (default 22:00–08:00). Set start == end to
 disable. These can also be set via `.env` as `AUDIO_DEVICE`, `TELEGRAM_SOUND`,
 `NO_AUDIO=1`, `AUDIO_QUIET_START`, `AUDIO_QUIET_END`.
+
+### Known bad speaker (Berrybase / Jieli UAC)
+
+The original micro-USB speaker (Jieli chipset) does not survive a USB host reset while it
+stays powered: after a cold boot *and* after `sudo reboot` it is completely absent from
+`lsusb` (not even a failed enumeration in `dmesg`), and only a physical replug sometimes
+revives it. On a Pi Zero the USB port's 5V cannot be switched in software, so the dwc2
+rebind in `usb-rescan.sh` cannot help. Verified 2026-09-04. Fixes are hardware only: a
+different speaker (C-Media CM108/CM119 or TI PCM2704 based devices enumerate reliably), or a
+GPIO-switched 5V line on the speaker cable so the board can power-cycle it at boot.
 
 ### Requirements
 

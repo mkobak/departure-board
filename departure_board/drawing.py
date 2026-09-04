@@ -16,7 +16,7 @@ import fetch_departures as fd
 from .font import ADV_WIDTH, BITMAP, CHAR_H, CHAR_SPACING, CHAR_W, DESCENDERS, LINE_SPACING
 from .constants import BOARD_MARGIN, DEST_MINS_GAP, LINE_ID_DEST_GAP, RIGHT_MARGIN
 from .renderer import Renderer, make_draw_helpers
-from .weather import ICON_SIZE, WEATHER_ICONS, WeatherData
+from .weather import ICON_SIZE, WEATHER_ICONS, WeatherData, precip_summary
 
 
 def _overlay_audio_warning(off, renderer: Renderer) -> None:
@@ -274,6 +274,11 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
     draw_text(text_x, CONTENT_Y, truncate(line1, max(0, r.cols - text_x - BOARD_MARGIN)))
     draw_text(text_x, CONTENT_Y + CHAR_H + 3, truncate(line2, max(0, r.cols - text_x - BOARD_MARGIN)))
     draw_text(text_x, CONTENT_Y + 2*(CHAR_H + 3), truncate(line3, max(0, r.cols - text_x - BOARD_MARGIN)))
+
+    # Bottom line (full width, below the icon): precipitation outlook
+    line4 = precip_summary(weather.get('slots') if weather else None)
+    if line4:
+        draw_text(left_x, CONTENT_Y + 3*(CHAR_H + 3), truncate(line4, max(0, r.cols - left_x - BOARD_MARGIN)))
 
     if audio_warning:
         _overlay_audio_warning(off, renderer)
