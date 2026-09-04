@@ -46,9 +46,12 @@ from .drawing import (
     draw_frame, draw_weather_frame, draw_screensaver_frame,
     draw_telegram_frame, draw_menu_frame, draw_username_frame,
     draw_shutdown_frame,
-    screensaver_random_pos, _start_telegram_poller,
+    screensaver_random_pos, screensaver_reminder_pos, SCREENSAVER_BOTTOM_RESERVED,
+    _start_telegram_poller,
 )
 from .audio import AudioPlayer
+from .reminders import reminder_text
+from .brightness import is_night, check_visibility, screensaver_color
 
 
 def run_loop(opts: argparse.Namespace):
@@ -135,6 +138,19 @@ def run_loop(opts: argparse.Namespace):
     screensaver_timeout: float = float(getattr(opts, 'screensaver_timeout', 600))  # seconds of inactivity
     screensaver_brightness: int = int(getattr(opts, 'screensaver_brightness', 40))  # dim brightness (0-100)
     screensaver_pos: Optional[Tuple[int, int]] = None  # current clock position on screen
+    screensaver_reminder: Optional[str] = None       # active reminder line (None = none)
+    screensaver_reminder_xy: Optional[Tuple[int, int]] = None  # reminder line position
+    force_reminder: str = str(getattr(opts, 'force_reminder', '') or '')  # debug override
+    # Night dimming: lower hardware brightness between night_start and night_end.
+    day_brightness: int = int(opts.brightness)
+    _nb = getattr(opts, 'night_brightness', None)
+    night_brightness: int = int(_nb if _nb is not None else day_brightness)
+    night_start: int = int(getattr(opts, 'night_start', 21))
+    night_end: int = int(getattr(opts, 'night_end', 6))
+    _sbn = getattr(opts, 'screensaver_brightness_night', None)
+    screensaver_brightness_night: int = int(_sbn if _sbn is not None else screensaver_brightness)
+    night_active: bool = is_night(datetime.now(), night_start, night_end)
+    last_night_check: float = 0.0
 
     # Game system state
     game_mode: str = "normal"  # "normal" | "username" | "menu" | "pregame" | "snake" | "breakout"
@@ -942,6 +958,23 @@ def run_loop(opts: argparse.Namespace):
 
     renderer = Renderer(opts.cols * opts.chain, opts.rows * opts.parallel)
 
+    # --- Brightness sanity checks + initial night mode -------------------------
+    # Warn early (in the journal) if any configured value would render as OFF,
+    # instead of finding out via a dark panel. See brightness.py for the math.
+    _pwm_bits = int(getattr(opts, 'pwm_bits', None) or 11)
+    _amber = (255, 140, 0)
+    check_visibility('day brightness', _amber, day_brightness, _pwm_bits)
+    check_visibility('night brightness', _amber, night_brightness, _pwm_bits)
+    check_visibility('screensaver (day)', screensaver_color(screensaver_brightness, day_brightness), day_brightness, _pwm_bits)
+    check_visibility('screensaver (night)', screensaver_color(screensaver_brightness_night, night_brightness), night_brightness, _pwm_bits)
+    if night_active:
+        try:
+            matrix.brightness = night_brightness
+        except Exception as e:  # noqa: BLE001
+            print(f"[brightness] failed to set night brightness: {e}", file=sys.stderr)
+    print(f"[brightness] night mode {'on' if night_active else 'off'} at startup "
+          f"(hw={matrix.brightness}, window {night_start:02d}:00-{night_end:02d}:00)", file=sys.stderr)
+
     # Rotary encoder integration (post-matrix init if not early) ----------------------
     if _HAVE_ENCODER and RotaryEncoder is not None and not getattr(opts, 'no_encoder', False) and not encoder_started_early:
         def _start_encoder():
@@ -1221,6 +1254,22 @@ def run_loop(opts: argparse.Namespace):
         poll_interval = 0.05  # 50ms poll - responsive enough for encoder + clock
         while running:
             now = time.time()
+            # --- Night dimming: switch hardware brightness on schedule ----------
+            # SetBrightness only affects pixels drawn afterwards, so force a full
+            # redraw whenever it changes (every draw function does Fill+SetPixel).
+            if now - last_night_check >= 1.0:
+                last_night_check = now
+                want_night = is_night(datetime.now(), night_start, night_end)
+                if want_night != night_active:
+                    night_active = want_night
+                    target = night_brightness if night_active else day_brightness
+                    try:
+                        matrix.brightness = target
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[brightness] failed to set brightness {target}: {e}", file=sys.stderr)
+                    display_dirty = True
+                    last_rendered_minute = ''
+                    print(f"[brightness] night mode {'on' if night_active else 'off'} (hw={target})", file=sys.stderr)
             # --- Telegram queue drain (needed by both menu and normal modes) ---
             try:
                 while True:
@@ -1329,20 +1378,28 @@ def run_loop(opts: argparse.Namespace):
             if not screensaver_active and screensaver_timeout > 0 and (now - last_interaction) >= screensaver_timeout:
                 screensaver_active = True
                 display_dirty = True
-                last_rendered_minute = ''  # force redraw
-                screensaver_pos = screensaver_random_pos(renderer, datetime.now().strftime('%H:%M'))
-                print(f"[screensaver] activated (dim={screensaver_brightness})", file=sys.stderr)
+                last_rendered_minute = ''  # force redraw (positions are picked below)
+                print(f"[screensaver] activated (dim={screensaver_brightness_night if night_active else screensaver_brightness})", file=sys.stderr)
             # --- Screensaver mode: show the time at a drifting random position ---
             if screensaver_active:
                 now_txt_override = None if time_is_synchronized() else ("--:--" if ntp_wait_mode == 'strict' else None)
                 current_minute = now_txt_override or datetime.now().strftime('%H:%M')
                 if current_minute != last_rendered_minute:
                     display_dirty = True
-                    screensaver_pos = screensaver_random_pos(renderer, current_minute)
+                    # Pickup reminder (evening before / morning of). Re-evaluated every
+                    # minute so it appears and disappears on schedule; the clock and the
+                    # reminder both jump to a new spot, the reminder only horizontally.
+                    screensaver_reminder = force_reminder or reminder_text(datetime.now())
+                    reserved = SCREENSAVER_BOTTOM_RESERVED if screensaver_reminder else 0
+                    screensaver_pos = screensaver_random_pos(renderer, current_minute, bottom_reserved=reserved)
+                    screensaver_reminder_xy = screensaver_reminder_pos(renderer, screensaver_reminder) if screensaver_reminder else None
                 if display_dirty:
                     try:
-                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos, dim=screensaver_brightness)
-                        print(f"[screensaver] drew {current_minute} at {screensaver_pos}", file=sys.stderr)
+                        ss_dim = screensaver_brightness_night if night_active else screensaver_brightness
+                        offscreen = draw_screensaver_frame(offscreen, matrix, renderer, now_text=now_txt_override, pos=screensaver_pos, dim=ss_dim,
+                                                           reminder_text=screensaver_reminder, reminder_pos=screensaver_reminder_xy)
+                        print(f"[screensaver] drew {current_minute} at {screensaver_pos}"
+                              + (f" reminder '{screensaver_reminder}' at {screensaver_reminder_xy}" if screensaver_reminder else ''), file=sys.stderr)
                     except Exception as _ss_err:  # noqa: BLE001
                         import traceback
                         print(f"[screensaver] draw error: {_ss_err}", file=sys.stderr)
@@ -1595,7 +1652,19 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument('--screensaver-timeout', type=int, default=600,
                    help='Seconds of inactivity before screensaver activates (0 to disable, default 600 = 10min)')
     p.add_argument('--screensaver-brightness', type=int, default=15,
-                   help='Panel brightness during screensaver (0-100, default 15)')
+                   help='Screensaver brightness during the day (0-100 of full panel output, default 15). '
+                        'With --pwm-bits 7 values below 13 lose the green channel and below 8 vanish.')
+    p.add_argument('--screensaver-brightness-night', type=int, default=None,
+                   help='Screensaver brightness during night hours (default: same as --screensaver-brightness)')
+    p.add_argument('--force-reminder', default='',
+                   help='Debug: always show this text as the screensaver reminder line, e.g. "Reminder: Compost"')
+    # Night dimming options
+    p.add_argument('--night-brightness', type=int, default=None,
+                   help='Hardware panel brightness during night hours (0-100, default: same as --brightness)')
+    p.add_argument('--night-start', type=int, default=21,
+                   help='Hour (0-23) when night dimming begins. Default 21 (9pm).')
+    p.add_argument('--night-end', type=int, default=6,
+                   help='Hour (0-23) when night dimming ends. Default 6 (6am). Set start == end to disable.')
     # Telegram bot options
     p.add_argument('--telegram-token', default='',
                    help='Telegram Bot API token (enables message overlay feature)')

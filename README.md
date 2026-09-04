@@ -28,6 +28,8 @@ departure-board/
 │   ├── renderer.py              # Text measurement, layout, draw helpers
 │   ├── font.py                  # Shared 5x7 bitmap font
 │   ├── constants.py             # Layout constants
+│   ├── reminders.py             # Pickup reminder schedule (compost/trash/cardboard)
+│   ├── brightness.py            # Night dimming schedule + LED visibility check
 │   ├── weather.py               # Open-Meteo weather integration
 │   ├── scores.py                # High score persistence
 │   └── games/
@@ -148,7 +150,13 @@ sudo systemctl restart departure-board.service
 --dest <name>          Optional exact destination filter
 --limit N              Number of departures (default 4)
 --refresh SEC          Refresh interval in seconds (default 30)
---brightness 0-100     Panel brightness (default 40)
+--brightness 0-100     Panel brightness during the day (default 40)
+--night-brightness N   Panel brightness during night hours (default: same as --brightness)
+--night-start H        Hour night dimming begins (default 21)
+--night-end H          Hour night dimming ends (default 6; start == end disables)
+--screensaver-brightness N        Screensaver brightness, day (default 15)
+--screensaver-brightness-night N  Screensaver brightness, night (default: same as day)
+--force-reminder TEXT  Debug: always show TEXT as the screensaver reminder line
 --rows H               Panel rows (default 64)
 --cols W               Panel columns (default 128)
 --gpio-mapping MAP     Hardware mapping (default adafruit-hat)
@@ -214,6 +222,40 @@ Pass `--enc-poll` if interrupts fail or you need deterministic polling.
 ```bash
 python tools/encoder_debug.py --clk 10 --dt 9 --sw 11
 ```
+
+## Screensaver, Reminders & Night Dimming
+
+After `--screensaver-timeout` seconds without encoder input the panel shows only the
+clock, jumping to a new random spot every minute.
+
+**Pickup reminders.** From 20:00 on the evening before a pickup until 09:00 on the pickup
+day, the screensaver adds a `Reminder: …` line on the bottom text row. It shifts left/right
+each minute and the clock stays clear of it. The schedule lives in
+[departure_board/reminders.py](departure_board/reminders.py):
+
+- Compost: every Thursday
+- Trash: every Tuesday and Friday
+- Cardboard: every 4th Wednesday, anchored on 2026-09-09 (`CARDBOARD_ANCHOR`, 28-day period)
+
+Edit the constants there to change days, hours or the cardboard anchor date. To check the
+layout at any time of day run with `--force-reminder "Reminder: Cardboard" --screensaver-timeout 6`.
+
+**Night dimming.** Between `--night-start` and `--night-end` (default 21:00-06:00) the panel
+switches to `--night-brightness` and the screensaver to `--screensaver-brightness-night`.
+The switch is logged as `[brightness] night mode on/off` in the journal.
+
+**Why very low values show nothing.** The LED library maps each colour channel through a
+CIE1931 curve to an 11-bit PWM level, and `--pwm-bits N` discards the lowest `11-N` bits.
+With `--pwm-bits 7` any level below 16/2047 renders as OFF: at amber the green channel dies
+below hardware brightness 13 (or screensaver value 13) and red below 7 (screensaver 8). At startup the
+service prints the resulting PWM levels for every configured value and a
+`[brightness] WARNING` if one would be invisible:
+
+```bash
+journalctl -u departure-board.service -b | grep brightness
+```
+
+Safe values with `--pwm-bits 7`: hardware brightness >= 20, screensaver brightness >= 15.
 
 ## Telegram Integration
 
@@ -292,6 +334,7 @@ python tools/panel_test_fill.py --help   # Test panel with solid color fill
 |---------|-------|-----|
 | No output / all dark | Service not running or crash | `journalctl -u departure-board.service -f` |
 | Flicker / tearing | Refresh rate too high | Lower `--brightness`; keep `--limit-refresh-hz` moderate |
+| Dark panel at night / dim screensaver invisible | Value below the PWM floor for `--pwm-bits` | Check `journalctl` for `[brightness] WARNING`; raise `--night-brightness` / `--screensaver-brightness-night` |
 | Wrong colors / mapping | Mapping flag mismatch | Try `--gpio-mapping adafruit-hat` |
 | Text truncated too much | Panel size or chain mismatch | Adjust `--cols`/`--rows`/`--chain`/`--parallel` |
 | ImportError rgbmatrix | Binding not installed in venv | Rebuild with venv python & reinstall |

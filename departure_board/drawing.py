@@ -281,23 +281,47 @@ def draw_weather_frame(off, matrix, renderer: Renderer, header_text: str, weathe
     return matrix.SwapOnVSync(off)
 
 
-def screensaver_random_pos(renderer: Renderer, now_txt: str) -> Tuple[int, int]:
-    """Return a random (x, y) that keeps the time string fully on screen with a 3px border."""
+# Vertical band at the bottom of the screensaver reserved for the reminder line:
+# glyph height + 2px descender + 4px gap so the clock never touches it.
+SCREENSAVER_BOTTOM_RESERVED = CHAR_H + 2 + 4
+
+
+def screensaver_random_pos(renderer: Renderer, now_txt: str, bottom_reserved: int = 0) -> Tuple[int, int]:
+    """Return a random (x, y) that keeps the time string fully on screen with a 3px border.
+
+    bottom_reserved: number of rows at the bottom the clock must stay out of
+    (used while a reminder line occupies the bottom of the screen).
+    """
     time_w = renderer.measure(now_txt)
     min_x = 3
     max_x = max(min_x, renderer.cols - time_w - 3)
     min_y = 3
-    max_y = max(min_y, renderer.rows - CHAR_H - 3)
+    max_y = max(min_y, renderer.rows - CHAR_H - 3 - max(0, bottom_reserved))
     return (random.randint(min_x, max_x), random.randint(min_y, max_y))
 
 
-def draw_screensaver_frame(off, matrix, renderer: Renderer, now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None, dim: int = 60):
-    """Draw a minimal screensaver: just the current time at the given position (or centered).
+def screensaver_reminder_pos(renderer: Renderer, text: str) -> Tuple[int, int]:
+    """Position for the reminder line: fixed bottom text row, random horizontal offset.
 
-    dim: apparent brightness 0-100 as a fraction of the panel's full output at the current
-         hardware brightness. Pixel values are scaled to compensate so that dim=40 means
-         40% of maximum visible brightness, not 40% of 255 further attenuated by hardware.
-         matrix.brightness is never changed (avoids hardware reset side-effects).
+    y leaves room for a 2px descender (e.g. the 'p' in Compost) inside the 1px board border.
+    """
+    text_w = renderer.measure(text)
+    min_x = 3
+    max_x = max(min_x, renderer.cols - text_w - 3)
+    y = renderer.rows - CHAR_H - 2 - BOARD_MARGIN - 1
+    return (random.randint(min_x, max_x), max(0, y))
+
+
+def draw_screensaver_frame(off, matrix, renderer: Renderer, now_text: Optional[str] = None, pos: Optional[Tuple[int, int]] = None, dim: int = 60,
+                           reminder_text: Optional[str] = None, reminder_pos: Optional[Tuple[int, int]] = None):
+    """Draw a minimal screensaver: the current time at the given position (or centered),
+    plus an optional reminder line (e.g. "Reminder: Compost") at reminder_pos.
+
+    dim: apparent brightness 0-100 as an absolute fraction of the panel's full output.
+         Pixel values are divided by the *current* hardware brightness so the screensaver
+         looks the same whether the panel is in day or night mode (dim=30 at hw 60 and
+         dim=30 at hw 40 draw the same light). See brightness.pwm_level for the floor
+         below which the LED library renders a channel as OFF.
     """
     off.Fill(0, 0, 0)
     # Compensate for hardware brightness so dim=40 means 40% of the panel's full output,
@@ -328,12 +352,23 @@ def draw_screensaver_frame(off, matrix, renderer: Renderer, now_text: Optional[s
         x = (r.cols - time_w) // 2
         y = (r.rows - CHAR_H) // 2
 
-    cur = x
-    for i, ch in enumerate(now_txt):
-        draw_glyph(cur, y, ch)
-        cur += glyph_width(ch)
-        if i != len(now_txt) - 1:
-            cur += CHAR_SPACING
+    def draw_text(x0: int, y0: int, text: str) -> None:
+        cur = x0
+        for i, ch in enumerate(text):
+            draw_glyph(cur, y0, ch)
+            cur += glyph_width(ch)
+            if i != len(text) - 1:
+                cur += CHAR_SPACING
+
+    draw_text(x, y, now_txt)
+
+    if reminder_text:
+        rtxt = _normalize_for_display(reminder_text)
+        if reminder_pos is not None:
+            rx, ry = reminder_pos
+        else:
+            rx, ry = screensaver_reminder_pos(r, rtxt)
+        draw_text(rx, ry, rtxt)
 
     return matrix.SwapOnVSync(off)
 
