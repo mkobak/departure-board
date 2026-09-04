@@ -1335,9 +1335,8 @@ def run_loop(opts: argparse.Namespace):
                     else:
                         telegram_msg = new_msg
                         telegram_expires = now + 30.0
-                        # Wake screensaver so the message is visible
-                        if screensaver_active:
-                            screensaver_active = False
+                        # Shown on top of the screensaver (see overlay block below); the
+                        # screensaver state is left as is so it resumes after the message.
                         display_dirty = True
             except queue.Empty:
                 pass
@@ -1419,6 +1418,20 @@ def run_loop(opts: argparse.Namespace):
             if shutdown_overlay_active:
                 # The overlay is already drawn above; skip the normal render
                 # paths for this iteration so they don't clobber it.
+                time.sleep(poll_interval)
+                continue
+            # --- Telegram message overlay (normal mode; also over the screensaver) ---
+            # Handled before the screensaver so a message is visible while the board is
+            # idle. Games keep running untouched; a message received during a game is
+            # shown once the game ends, if it hasn't expired by then.
+            if telegram_msg is not None and now >= telegram_expires:
+                telegram_msg = None
+                display_dirty = True
+                last_rendered_minute = ''  # force the screensaver/normal frame to redraw
+            if telegram_msg is not None and game_mode == "normal":
+                if display_dirty:
+                    offscreen = draw_telegram_frame(offscreen, matrix, renderer, telegram_msg)
+                    display_dirty = False
                 time.sleep(poll_interval)
                 continue
             # --- Screensaver activation check (runs from any mode) ---
@@ -1578,19 +1591,6 @@ def run_loop(opts: argparse.Namespace):
                 time_until_tick = max(0.005, (breakout_last_tick + breakout_tick_interval) - time.time())
                 time.sleep(min(time_until_tick, poll_interval))
                 continue
-            # --- Telegram message overlay ---
-            # Expire the overlay once 30 seconds are up
-            if telegram_msg is not None and now >= telegram_expires:
-                telegram_msg = None
-                display_dirty = True
-            # While a telegram message is active, show only that
-            if telegram_msg is not None:
-                if display_dirty:
-                    offscreen = draw_telegram_frame(offscreen, matrix, renderer, telegram_msg)
-                    display_dirty = False
-                time.sleep(poll_interval)
-                continue
-
             # --- Normal mode ---
             # Fetch if scheduled
             if next_scheduled_fetch and now >= next_scheduled_fetch:
