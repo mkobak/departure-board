@@ -256,6 +256,10 @@ journalctl -u departure-board.service -b | grep brightness
 ```
 
 Safe values with `--pwm-bits 7`: hardware brightness >= 20, screensaver brightness >= 15.
+Visible is not the same as stable, though: on this panel screensaver values below 30
+(tested 20, 25, 26) flicker because the LEDs run on only the shortest PWM pulses, so 30 is
+the practical screensaver floor day and night. Night dimming therefore mainly affects the
+main screens (hardware brightness 60 -> 40).
 
 ## Telegram Integration
 
